@@ -38,11 +38,17 @@ jobs:
           compression-level: 0
           retention-days: 14
 
+      # Packed into one tar because artifact file names may not contain ":"
+      # (packages with an epoch are named like "name-1:1.0-1-any.pkg.tar.zst").
+      - name: Pack packages
+        run: tar -cf out/sufun-packages.tar -C out/packages .
+
       - name: Upload packages (for the release job)
         uses: actions/upload-artifact@v4
         with:
           name: sufun-packages
-          path: out/packages/
+          path: out/sufun-packages.tar
+          compression-level: 0
           retention-days: 14
 
   test:

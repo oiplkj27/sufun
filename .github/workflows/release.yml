@@ -47,7 +47,9 @@ jobs:
       - uses: actions/download-artifact@v4
         with: { name: sufun-iso, path: iso }
       - uses: actions/download-artifact@v4
-        with: { name: sufun-packages, path: packages }
+        with: { name: sufun-packages, path: pkgtar }
+      - name: Unpack packages
+        run: mkdir -p packages && tar -xf pkgtar/sufun-packages.tar -C packages
 
       - name: Import signing subkey (temporary keyring)
         env:
