@@ -26,6 +26,7 @@ SURFACE_KEY_URL=https://raw.githubusercontent.com/linux-surface/linux-surface/ma
 SURFACE_REPO=$'\n[linux-surface]\nServer = https://pkg.surfacelinux.com/arch/\n'
 
 log() { printf '\e[1;36m==> %s\e[0m\n' "$*"; }
+die() { printf '\e[1;31m==> ERROR: %s\e[0m\n' "$*" >&2; exit 1; }
 strip_list() { sed -e 's/#.*//' -e 's/[[:space:]]//g' -e '/^$/d' "$@"; }
 
 [[ $EUID -eq 0 ]] || { echo "build.sh must run as root" >&2; exit 1; }
@@ -73,10 +74,18 @@ grep -rlE 'vmlinuz-linux|initramfs-linux' "$PROFILE"/efiboot "$PROFILE"/grub "$P
 # Menu titles: "Arch Linux install medium ..." -> "SUFUN live USB / installer ..."
 grep -rl 'Arch Linux' "$PROFILE"/efiboot "$PROFILE"/grub "$PROFILE"/syslinux 2>/dev/null \
   | xargs -r sed -i -e 's/Arch Linux install medium/SUFUN live USB \/ installer/g' -e 's/Arch Linux/SUFUN/g'
+# Older archiso shipped its own airootfs/etc/mkinitcpio.d/linux.preset; archiso 92+
+# does not: there the linux-surface package's own preset is used (it already
+# names vmlinuz-linux-surface / initramfs-linux-surface.img) and archiso's hooks
+# come from the drop-in etc/mkinitcpio.conf.d/archiso.conf.
 PRESETS="$PROFILE/airootfs/etc/mkinitcpio.d"
-mv "$PRESETS/linux.preset" "$PRESETS/linux-surface.preset"
-sed -i -e 's/vmlinuz-linux/vmlinuz-linux-surface/g' -e 's/initramfs-linux/initramfs-linux-surface/g' \
-  "$PRESETS/linux-surface.preset"
+if [[ -f $PRESETS/linux.preset ]]; then
+  mv "$PRESETS/linux.preset" "$PRESETS/linux-surface.preset"
+  sed -i -e 's/vmlinuz-linux/vmlinuz-linux-surface/g' -e 's/initramfs-linux/initramfs-linux-surface/g' \
+    "$PRESETS/linux-surface.preset"
+fi
+[[ -f $PROFILE/airootfs/etc/mkinitcpio.conf.d/archiso.conf ]] \
+  || die "releng profile has no mkinitcpio.conf.d/archiso.conf: archiso changed, check build.sh"
 # Note: the live USB keeps archiso's own initramfs hooks (archiso.conf), without
 # the Plymouth boot screen: Plymouth is not reliable with archiso's hooks.
 # The installed system gets the SUFUN boot screen (sufun-base, 10-sufun.conf).
