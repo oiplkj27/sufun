@@ -15,7 +15,10 @@ PlasmoidItem {
     readonly property bool korean: Qt.locale().name.startsWith("ko")
     readonly property string label: korean ? "검색" : "Search"
 
-    preferredRepresentation: compactRepresentation
+    // The button is the "full representation" shown directly in the panel (like
+    // Plasma's Show Desktop button). A compact-only widget would show nothing:
+    // Plasma 6 treats a widget without a full representation as "always expanded".
+    preferredRepresentation: fullRepresentation
     toolTipMainText: label
     toolTipSubText: korean ? "앱, 파일, 설정을 찾습니다" : "Find apps, files and settings"
 
@@ -31,7 +34,7 @@ PlasmoidItem {
         });
     }
 
-    compactRepresentation: MouseArea {
+    fullRepresentation: MouseArea {
         id: box
 
         Layout.minimumWidth: Kirigami.Units.gridUnit * 10

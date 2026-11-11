@@ -16,6 +16,10 @@ for (var j = 0; j < desktopsArray.length; j++) {
     d.writeConfig("arrangement", 1);            // 1 = columns (top to bottom)
     d.writeConfig("alignment", 0);              // 0 = start at the left
     d.writeConfig("iconSize", 2);               // 2 = 48 px, Windows' "medium icons"
+    // 2 = by date, oldest first: icons keep the order first-login creates them in
+    // (휴지통, Firefox, Steam, Writer, 메모장) and new files go to the end, like
+    // Windows. (The default 0 means "by name", not "unsorted".)
+    d.writeConfig("sortMode", 2);
 }
 
 // --- Taskbar ---

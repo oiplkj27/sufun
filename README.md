@@ -48,13 +48,13 @@ Default for every new user, on the live USB and on the installed system (all in 
 
 | Part | How it is done | Why this way |
 |---|---|---|
-| Start button | Icon theme **"SUFUN"** (in `sufun-base`) = Fluent + the SUFUN logo for every `start-here*` name | Fluent's start icons are the Windows logo. Our theme sits *on top of* Fluent, so Fluent updates can't bring the Windows logo back. The Windows logo is also removed from `sufun-fluent-icons` (with Edge/Office/Teams/Skype/OneDrive logos, 59 files) and from the Plasma style (`icons/start.svgz`). |
+| Start button | Icon theme **"SUFUN"** (in `sufun-base`) = Fluent + the SUFUN logo for every `start-here*` name | Fluent's start icons are the Windows logo. Our theme sits *on top of* Fluent, so Fluent updates can't bring the Windows logo back. The Windows logo is also removed from `sufun-fluent-icons` (with Edge/Office/Teams/Skype/OneDrive logos, 59 files), and Fluent's Office file-type icons that copy the Word/Excel/PowerPoint/Outlook logos are removed too (.docx/.xlsx/.pptx files show Fluent's plain document/spreadsheet/presentation icons) and from the Plasma style (`icons/start.svgz`). |
 | 검색 box | Small SUFUN widget `org.sufun.search` → opens **KRunner** (apps, recent files, folders, settings, calculator) in the middle of the screen | Plasma has no search *field* for the panel. KRunner is Plasma's own search. File-content search is off (Baloo indexing uses too much CPU/RAM). |
 | Task View | Small SUFUN widget `org.sufun.taskview` → KWin **Overview** | Plasma 6.8 has no Overview button widget. |
 | Clock | Small SUFUN widget `org.sufun.clock`: two lines, right-aligned, same size. Korean `오전 2:33` / English `2:33 AM`, below it `2026-11-12`. Click = Plasma's calendar | Plasma's Digital Clock always puts 오전/오후 *after* the time, draws the date smaller and centers both lines. |
 | Start menu | **Kickoff** (Plasma's own): pinned apps as a grid, user name + picture, power buttons. Pinned apps: `/etc/xdg/kicker-extra-favoritesrc`. Recent files: *Places → History* | See "Start menu: Kickoff, not Menu 11" below. |
-| Desktop icons | 휴지통, Firefox, Steam, LibreOffice Writer, 메모장, in columns from the top-left, 48 px, double-click to open | Made by `/usr/lib/sufun/first-login` in the user's desktop folder (`~/바탕화면` in Korean). |
-| Tray | Always visible: 한/영 (Fcitx5 shows text, not an icon), network, volume, battery. Behind `^`: Bluetooth, notifications, clipboard, brightness | Set by `first-login`: Plasma's layout script can't reach widgets *inside* the tray, so at the first login Plasma's shell is stopped for ~2 s, the settings are written, and it starts again. |
+| Desktop icons | 휴지통, Firefox, Steam, LibreOffice Writer, 메모장, in columns from the top-left, 48 px, double-click to open | Made by `/usr/lib/sufun/first-login` in the user's desktop folder (`~/바탕화면` in Korean). The desktop sorts by date (oldest first), so this order stays and new files appear at the end, like Windows. |
+| Tray | Always visible: 한/영 (Fcitx5 shows text, not an icon), network, volume, battery. Behind `^`: Bluetooth, notifications, clipboard, brightness | Set by `first-login`: Plasma's layout script can't reach widgets *inside* the tray, so at the first login Plasma's shell is stopped for ~2 s (it saves the tray when it quits), the settings are written, and it starts again. |
 | Alt+Tab | KWin **Thumbnail Grid**: live window previews | The only switcher with previews that comes with KWin itself (the others need `kdeplasma-addons`, +19 MB). |
 | Files (Dolphin) | Places pane on the left (Home, Desktop, Documents, Downloads, Pictures, ..., drives under *Devices*), address bar you can type into | Folder names follow the language (`xdg-user-dirs`): 바탕화면, 문서, 다운로드, 사진, ... |
 
@@ -85,7 +85,7 @@ Default for every new user, on the live USB and on the installed system (all in 
 | plasma-systemmonitor | +3.0 MB | only while open (measured in CI, see above) |
 | 3 SUFUN widgets (search, Task View, clock) | ~15 KB | a few MB inside the Plasma shell (small QML; the calendar loads only when you open it) |
 | SUFUN icon theme (PNG start logo, 9 sizes) | ~0.2 MB | – |
-| Removed Microsoft/Windows logos | −59 icon files | – |
+| Removed Microsoft/Windows logos | −59 icon files, plus the Office-logo file-type icons | – |
 | Desktop icons (5 shortcuts) | a few KB | the desktop was already a Folder View; a few MB for 5 icons |
 | Alt+Tab thumbnails, Overview, KRunner | 0 (part of KWin/Plasma) | only while open |
 | Settings files | a few KB | – |

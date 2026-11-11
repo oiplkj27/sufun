@@ -4,7 +4,7 @@
 pkgname=sufun-fluent-icons
 pkgver=20260727
 _tag=2026-07-27
-pkgrel=2
+pkgrel=3
 pkgdesc="Fluent icon theme, standard color only (from vinceliuice/Fluent-icon-theme)"
 arch=(any)
 url=https://github.com/vinceliuice/Fluent-icon-theme
@@ -37,5 +37,14 @@ package() {
             -o -iname 'ms-*' -o -iname 'live.svg' -o -iname 'excel.svg' -o -iname '*teams*' \
             -o -iname '*skype*' -o -iname 'folder-onedrive*' -o -iname 'outlook-for-linux*' \
             -o \( -iname '*microsoft*' ! -iname 'image-vnd.microsoft.icon*' \) \) -delete
+  # Office file-type icons drawn like Microsoft's Word/Excel/PowerPoint/Outlook/
+  # OneNote/Access/Publisher/Visio logos: removed, so .docx/.xlsx/.pptx files use
+  # Fluent's plain document/spreadsheet/presentation icons (x-office-*) instead.
+  find . -path '*/mimetypes/*' \( -iname '*msword*' -o -iname '*msexcel*' -o -iname '*mspowerpoint*' \
+            -o -iname '*msonenote*' -o -iname '*msoutlook*' -o -iname '*ms-word*' -o -iname '*ms-excel*' \
+            -o -iname '*ms-powerpoint*' -o -iname '*ms-access*' -o -iname '*ms-publisher*' \
+            -o -iname '*ms-infopath*' -o -iname '*ms-project*' -o -iname '*visio*' -o -iname '*openxmlformats*' \
+            -o -iname 'application-word*' -o -iname 'application-excel*' -o -iname 'application-powerpoint*' \
+            -o -iname 'word.svg' -o -iname 'wps-office*' -o -iname 'application-wps-office*' \) -delete
   find . -xtype l -delete
 }

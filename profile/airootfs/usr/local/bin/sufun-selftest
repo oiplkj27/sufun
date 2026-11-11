@@ -41,13 +41,22 @@ check_desktop() {
   check desktop-columns      grep -qx 'arrangement=1' "$applets"
   check plasma-running       pgrep -u "$u" -x plasmashell
   say "INFO desktop folder: $desk"
+  diagnose
 }
 
 # --- Things in the image: SUFUN start logo, no Microsoft logos ---
 check_image() {
   check start-logo-sufun     test -f /usr/share/icons/SUFUN/48x48/places/start-here-kde.png
-  check no-windows-logo      bash -c '! find /usr/share/icons/Fluent* /usr/share/plasma/desktoptheme \( -iname "start-here*" -o -iname "start.svg*" \) | grep -q .'
-  check no-microsoft-logos   bash -c '! find /usr/share/icons/Fluent* \( -iname "*microsoft-edge*" -o -iname "ms-word*" -o -iname "*teams*" \) | grep -q .'
+  # Windows logos were: start-here* in the Fluent icons, icons/start.svg* in the
+  # Fluent Plasma style. (Fluent's actions/start.svg is only an arrow, and Breeze's
+  # start.svgz is the KDE logo, so those are not counted.)
+  local found
+  found=$(find /usr/share/icons/Fluent* /usr/share/icons/.Fluent* -iname "start-here*" 2>/dev/null
+          find /usr/share/plasma/desktoptheme/Fluent* -path "*/icons/start.svg*" 2>/dev/null)
+  found=$(head -n 3 <<< "$found")
+  check no-windows-logo      test -z "$found"
+  [[ -n $found ]] && say "INFO still there: $(echo $found)"
+  check no-microsoft-logos   bash -c '! find /usr/share/icons/Fluent* /usr/share/icons/.Fluent* \( -iname "*microsoft-edge*" -o -iname "ms-word*" -o -iname "*teams*" -o -iname "*ms-excel*" -o -iname "*msoutlook*" \) | grep -q .'
 }
 
 # --- RAM numbers (informational, never fail the test) ---
@@ -59,24 +68,29 @@ pss_mb() {  # pss_mb <pid...>: memory really used by these processes ("PSS"), in
   done
   echo $((t / 1024))
 }
-as_user() {  # as_user <user> <command...>: run a program inside that user's desktop
-  local u=$1 uid; shift; uid=$(id -u "$u")
-  runuser -u "$u" -- env XDG_RUNTIME_DIR="/run/user/$uid" WAYLAND_DISPLAY=wayland-0 \
-    DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" QT_QPA_PLATFORM=wayland "$@"
+as_user() {  # as_user <user> <command...>: start a program inside that user's desktop session
+  systemd-run --user -M "$1@" --collect --quiet -- "${@:2}"
 }
 ram_report() {  # ram_report <user>
   local u=$1
   say "INFO ram used-total $(free -m | awk '/^Mem:/ {print $3}') MB of $(free -m | awk '/^Mem:/ {print $2}') MB"
   say "INFO ram plasmashell $(pss_mb $(pgrep -u "$u" -x plasmashell)) MB, kwin_wayland $(pss_mb $(pgrep -x kwin_wayland)) MB"
-  # Task manager candidates (Ctrl+Shift+Esc), each measured 25 s after opening
-  as_user "$u" plasma-systemmonitor >/dev/null 2>&1 &
+  # Task manager candidates (Ctrl+Shift+Esc), each measured 25 s after opening.
+  # (-f: the kernel cuts process names to 15 letters, "plasma-systemmo")
+  as_user "$u" plasma-systemmonitor >/dev/null 2>&1
   sleep 25
-  say "INFO ram task-manager plasma-systemmonitor $(pss_mb $(pgrep -u "$u" -x plasma-systemmonitor)) MB + ksystemstats $(pss_mb $(pgrep -u "$u" -x ksystemstats)) MB"
-  pkill -u "$u" -x plasma-systemmonitor; sleep 3
-  as_user "$u" konsole -e htop >/dev/null 2>&1 &
+  say "INFO ram task-manager plasma-systemmonitor $(pss_mb $(pgrep -u "$u" -f plasma-systemmonitor)) MB + ksystemstats $(pss_mb $(pgrep -u "$u" -x ksystemstats)) MB"
+  pkill -u "$u" -f plasma-systemmonitor; sleep 3
+  as_user "$u" konsole -e htop >/dev/null 2>&1
   sleep 25
   say "INFO ram task-manager konsole+htop $(pss_mb $(pgrep -u "$u" -x konsole) $(pgrep -u "$u" -x htop)) MB"
   pkill -u "$u" -x konsole; sleep 3
+}
+# If something went wrong: first-login's messages and widget errors, to the serial log
+diagnose() {
+  journalctl -b --no-pager -o cat 2>/dev/null \
+    | grep -E 'sufun-first-login|org\.sufun\.|first-login' | tail -n 15 \
+    | while IFS= read -r line; do say "LOG $line"; done
 }
 
 case "$MODE" in

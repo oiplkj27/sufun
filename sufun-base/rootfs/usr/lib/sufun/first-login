@@ -26,6 +26,9 @@ out=$(kscreen-doctor -o 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' \
 #   always visible: 한/영 (Fcitx), network, volume, battery
 #   behind the "^" arrow: Bluetooth, notifications, clipboard, brightness, input method
 #   Win+N: opens the notifications widget
+# Plasma writes the tray's inner widgets to the settings file only when the shell
+# quits, so: wait until the taskbar exists, stop the shell (it saves everything),
+# read the tray's numbers, change the settings, start the shell again.
 notif_ids() {  # prints "<tray id> <notifications applet id>" from the saved layout
   awk -F'[][]' '
     /^\[Containments\]\[[0-9]+\]\[Applets\]\[[0-9]+\]$/ { c = $4; a = $8; next }
@@ -33,20 +36,33 @@ notif_ids() {  # prints "<tray id> <notifications applet id>" from the saved lay
     c != "" && $0 == "plugin=org.kde.plasma.notifications" { print c, a; exit }
   ' "$APPLETS" 2>/dev/null
 }
-ids=""
-for _ in $(seq 60); do        # Plasma saves the new layout a few seconds after login
-  ids=$(notif_ids); [[ -n $ids ]] && break; sleep 1
+for _ in $(seq 60); do        # the taskbar is saved a few seconds after login
+  grep -qx 'plugin=org.kde.plasma.systemtray' "$APPLETS" 2>/dev/null && break; sleep 1
 done
+sleep 5                        # let the tray finish loading its icons
+if systemctl --user -q is-active plasma-plasmashell.service; then
+  how=systemd; systemctl --user stop plasma-plasmashell.service
+else
+  how=manual; kquitapp6 plasmashell >/dev/null 2>&1
+fi
+for _ in $(seq 20); do pgrep -u "$UID" -x plasmashell >/dev/null || break; sleep 0.5; done
+ids=$(notif_ids)
 if [[ -n $ids ]]; then
   read -r tray notif <<< "$ids"
-  systemctl --user stop plasma-plasmashell.service 2>/dev/null
   w() { kwriteconfig6 --file "$APPLETS" --group Containments --group "$tray" "$@"; }
   w --group General --key shownItems \
     "Fcitx,org.kde.plasma.networkmanagement,org.kde.plasma.volume,org.kde.plasma.battery"
   w --group General --key hiddenItems \
     "org.kde.plasma.bluetooth,org.kde.plasma.notifications,org.kde.plasma.clipboard,org.kde.plasma.brightness,org.kde.plasma.manage-inputmethod"
   w --group Applets --group "$notif" --group Shortcuts --key global "Meta+N"
-  systemctl --user start plasma-plasmashell.service 2>/dev/null
+  echo "sufun-first-login: tray $tray set (notifications applet $notif, shell restart: $how)"
+else
+  echo "sufun-first-login: tray not found in $APPLETS, tray left as Plasma's default"
+fi
+if [[ $how == systemd ]]; then
+  systemctl --user start plasma-plasmashell.service
+else
+  setsid -f plasmashell >/dev/null 2>&1
 fi
 
 # --- 3. User folders (names follow the language: 바탕화면, 문서, 다운로드, 사진 ...) ---
@@ -56,7 +72,9 @@ xdg-user-dirs-update >/dev/null 2>&1
 DESK=$(xdg-user-dir DESKTOP 2>/dev/null)
 if [[ -n $DESK && $DESK != "$HOME" ]]; then
   mkdir -p "$DESK"
-  sleep 5   # the desktop is ready again after step 2; icons then appear in this order
+  sleep 5   # the desktop is ready again after step 2
+  # The desktop sorts icons by date (oldest first), so 1 second between files
+  # keeps this order: 휴지통, Firefox, Steam, LibreOffice Writer, 메모장
   if [[ ! -e $DESK/trash.desktop ]]; then
     {
       echo '[Desktop Entry]'
@@ -67,7 +85,7 @@ if [[ -n $DESK && $DESK != "$HOME" ]]; then
       echo 'EmptyIcon=user-trash'
       echo 'URL=trash:/'
     } > "$DESK/trash.desktop"
-    sleep 0.5
+    sleep 1.1
   fi
   for app in firefox steam libreoffice-writer featherpad; do
     for dir in /usr/local/share/applications /usr/share/applications; do
@@ -75,7 +93,7 @@ if [[ -n $DESK && $DESK != "$HOME" ]]; then
       if [[ -f $src && ! -e $DESK/$app.desktop ]]; then
         cp "$src" "$DESK/$app.desktop"
         chmod 755 "$DESK/$app.desktop"   # "trusted": opens without a warning
-        sleep 0.5
+        sleep 1.1
         break
       fi
     done
