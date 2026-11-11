@@ -1,0 +1,12 @@
+# Before every package upgrade or removal: Timeshift snapshot of the system (@ only).
+# If the snapshot fails, the update continues (a warning is printed).
+[Trigger]
+Operation = Upgrade
+Operation = Remove
+Type = Package
+Target = *
+
+[Action]
+Description = SUFUN: Timeshift 백업(스냅샷)을 만드는 중...
+When = PreTransaction
+Exec = /usr/lib/sufun/pacman-snapshot

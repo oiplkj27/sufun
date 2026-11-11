@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=SUFUN Update
+Name[ko]=SUFUN 업데이트
+Comment=Install a SUFUN update file (.sufun)
+Comment[ko]=SUFUN 업데이트 파일(.sufun) 설치
+Exec=/usr/bin/sufun-update-gui %f
+Icon=system-software-update
+Terminal=false
+NoDisplay=true
+MimeType=application/x-sufun-update;

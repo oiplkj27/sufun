@@ -1,0 +1,34 @@
+# Vendored from AUR cachyos-ananicy-rules 1:1.1.49-1 on 2026-11-11 (commit 236764c2277a4dda53c9dd7995b69a56f09de776).
+# Review changes with scripts/check-aur-updates.sh before updating.
+# Maintainer: Leonidas Spyropoulos <artafinde @ archlinux.org>
+# Maintainer: DeepChirp <deepchirp@archlinux.org>
+# Contributor: Peter Jung ptr1337 <admin@ptr1337.dev>
+# Contributor: Piotr Gorski <piotrgorski@cachyos.org>
+
+pkgname=cachyos-ananicy-rules
+_gitname=ananicy-rules
+pkgver=1.1.49
+pkgrel=1
+epoch=1
+groups=(cachyos)
+arch=('any')
+url="https://github.com/CachyOS/${_gitname}"
+license=(GPL-3.0-only)
+pkgdesc='CachyOS - ananicy-rules'
+source=("${pkgname}-${pkgver}::${url}/archive/refs/tags/${pkgver}.tar.gz")
+sha256sums=('91da2ae358f1f83e4a3e3b9b42abacf235be75f347a9b1ede1b3dd67a2dae5a6')
+replaces=(ananicy-rules-git)
+# Local additions (not in AUR): taken from cachyos-ananicy-rules-git so this
+# package can replace it. Tag 1.1.49 = upstream commit
+# 03ef03fbf7e834385377432ccecaedd32e3414bb (same tree as its commit tarball).
+depends=(ananicy-cpp)
+provides=(cachyos-ananicy-rules-git)
+conflicts=(cachyos-ananicy-rules-git)
+backup=(etc/ananicy.d/ananicy.conf)
+
+package() {
+  cd "${_gitname}-${pkgver}"
+  install -d "$pkgdir/etc/ananicy.d"
+  cp -Rt "$pkgdir/etc/ananicy.d/" *.cgroups *.types ananicy.conf 00-default
+  install -Dm644 "LICENSE" -t "$pkgdir/usr/share/licenses/$pkgname"
+}

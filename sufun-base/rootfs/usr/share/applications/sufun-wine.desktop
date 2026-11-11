@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Name=Wine (Windows program)
+Name[ko]=Wine (Windows 프로그램)
+Comment=Run Windows programs
+Exec=/usr/bin/sufun-wine %f
+Icon=wine
+Terminal=false
+NoDisplay=true
+MimeType=application/x-ms-dos-executable;application/x-msdownload;application/vnd.microsoft.portable-executable;application/x-msi;application/x-ms-shortcut;
+Actions=korean;
+
+[Desktop Action korean]
+Name=Open in Korean mode (old Korean programs)
+Name[ko]=한국어 모드로 열기 (오래된 한국 프로그램)
+Exec=env LC_ALL=ko_KR.UTF-8 /usr/bin/sufun-wine %f

@@ -1,0 +1,93 @@
+# Official release: push a tag "v<version>" that matches the VERSION file, e.g.
+#   git tag v1.1 && git push origin v1.1
+# 1. checks the tag, 2. builds + boot-tests (same as test builds),
+# 3. ONLY if the tests pass and you approve it (environment "release"):
+#    signs the packages, makes sufun-update-<version>.sufun + SHA256SUMS,
+#    and publishes a GitHub Release.
+# The signing key lives only in the "release" environment's secrets, so pushes,
+# pull requests and forks can never use it.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag must match VERSION, release notes must exist
+        run: |
+          v=$(tr -d '[:space:]' < VERSION)
+          [ "$GITHUB_REF_NAME" = "v$v" ] || { echo "::error::tag $GITHUB_REF_NAME does not match VERSION ($v)"; exit 1; }
+          [ -f "release-notes/$v.txt" ] || { echo "::error::missing release-notes/$v.txt"; exit 1; }
+          [ -s keys/sufun.asc ] || { echo "::error::keys/sufun.asc (public key) is missing"; exit 1; }
+
+  build-test:
+    needs: check
+    uses: ./.github/workflows/build-test.yml
+
+  release:
+    needs: build-test              # runs only if build AND boot/install tests passed
+    runs-on: ubuntu-latest
+    environment: release           # waits for your approval; holds the signing secrets
+    permissions:
+      contents: write              # to create the GitHub Release
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with: { name: sufun-iso, path: iso }
+      - uses: actions/download-artifact@v4
+        with: { name: sufun-packages, path: packages }
+
+      - name: Import signing subkey (temporary keyring)
+        env:
+          SUFUN_SIGNING_KEY: ${{ secrets.SUFUN_SIGNING_KEY }}
+        run: |
+          [ -n "$SUFUN_SIGNING_KEY" ] || { echo "::error::secret SUFUN_SIGNING_KEY is not set in environment 'release'"; exit 1; }
+          export GNUPGHOME="$RUNNER_TEMP/gnupg"; mkdir -m 700 "$GNUPGHOME"
+          echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
+          printf '%s\n' "$SUFUN_SIGNING_KEY" | gpg --batch --import
+          # Also import the public key from the repo: it carries the newest expiry dates
+          # and revocations, and must belong to the same key.
+          gpg --batch --import keys/sufun.asc
+          gpg --list-secret-keys --keyid-format long
+
+      - name: Make signed .sufun update file
+        env:
+          SUFUN_SIGNING_PASSPHRASE: ${{ secrets.SUFUN_SIGNING_PASSPHRASE }}
+        run: bash scripts/make-sufun-update.sh packages dist
+
+      - name: Add ISO (split into parts if it is 2 GiB or larger)
+        run: bash scripts/ci/add-iso-to-release.sh iso dist
+
+      - name: SHA256SUMS (signed)
+        env:
+          SUFUN_SIGNING_PASSPHRASE: ${{ secrets.SUFUN_SIGNING_PASSPHRASE }}
+        run: |
+          cd dist
+          sha256sum -- * > "$RUNNER_TEMP/SHA256SUMS" && mv "$RUNNER_TEMP/SHA256SUMS" .
+          gpg --batch --yes --pinentry-mode loopback --passphrase "$SUFUN_SIGNING_PASSPHRASE" \
+              --armor --detach-sign --output SHA256SUMS.asc SHA256SUMS
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v=$(tr -d '[:space:]' < VERSION)
+          gh release create "$GITHUB_REF_NAME" dist/* --title "SUFUN $v" --notes-file "release-notes/$v.txt"
+
+      - name: Remove the key from the runner
+        if: always()
+        run: |
+          gpgconf --kill all || true
+          rm -rf "$RUNNER_TEMP/gnupg"

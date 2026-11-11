@@ -1,0 +1,29 @@
+# Plasma power settings: defaults for every user (System Settings > Power Management).
+# Profiles: AC = charger plugged in, Battery, LowBattery.
+
+# CPU power profile (power-profiles-daemon). thermald still throttles safely when hot.
+[AC][Performance]
+PowerProfile=performance
+
+[Battery][Performance]
+PowerProfile=balanced
+
+[LowBattery][Performance]
+PowerProfile=power-saver
+
+# Closing the Type Cover over the screen = sleep (LidAction 1 = Sleep, SleepMode 1 = suspend to RAM),
+# also on the charger. With an external monitor connected, closing does nothing.
+[AC][SuspendAndShutdown]
+LidAction=1
+SleepMode=1
+InhibitLidActionWhenExternalMonitorPresent=true
+
+[Battery][SuspendAndShutdown]
+LidAction=1
+SleepMode=1
+InhibitLidActionWhenExternalMonitorPresent=true
+
+[LowBattery][SuspendAndShutdown]
+LidAction=1
+SleepMode=1
+InhibitLidActionWhenExternalMonitorPresent=true

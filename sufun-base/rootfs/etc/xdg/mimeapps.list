@@ -1,0 +1,37 @@
+# Default apps for every user (a user's own choice in ~/.config/mimeapps.list wins).
+[Default Applications]
+# Windows programs open with Wine
+application/x-ms-dos-executable=sufun-wine.desktop
+application/x-msdownload=sufun-wine.desktop
+application/vnd.microsoft.portable-executable=sufun-wine.desktop
+application/x-msi=sufun-wine.desktop
+application/x-ms-shortcut=sufun-wine.desktop
+# SUFUN update files
+application/x-sufun-update=sufun-update.desktop
+# Text: .txt, .log, .md. (.ini and .conf have no own type; they are detected as text/plain.)
+text/plain=featherpad.desktop
+text/x-log=featherpad.desktop
+text/markdown=featherpad.desktop
+# Video: mp4, mkv, webm, avi, mov (+ older names of the same types)
+video/mp4=org.kde.haruna.desktop
+video/matroska=org.kde.haruna.desktop
+video/x-matroska=org.kde.haruna.desktop
+video/webm=org.kde.haruna.desktop
+video/vnd.avi=org.kde.haruna.desktop
+video/x-msvideo=org.kde.haruna.desktop
+video/quicktime=org.kde.haruna.desktop
+video/ogg=org.kde.haruna.desktop
+# Audio: mp3, m4a, flac, ogg/opus, wav
+audio/mpeg=org.kde.haruna.desktop
+audio/mp4=org.kde.haruna.desktop
+audio/flac=org.kde.haruna.desktop
+audio/ogg=org.kde.haruna.desktop
+audio/vorbis=org.kde.haruna.desktop
+audio/x-opus+ogg=org.kde.haruna.desktop
+audio/vnd.wave=org.kde.haruna.desktop
+audio/x-wav=org.kde.haruna.desktop
+# Korean word processor files (Hancom HWP / HWPX) open in LibreOffice Writer (H2Orestart)
+application/x-hwp=libreoffice-writer.desktop
+application/x-hwpx=libreoffice-writer.desktop
+application/haansofthwp=libreoffice-writer.desktop
+application/haansofthwpx=libreoffice-writer.desktop

@@ -1,0 +1,2 @@
+# BFQ keeps the desktop responsive while the eMMC/SSD is busy.
+ACTION=="add|change", KERNEL=="mmcblk[0-9]*|sd[a-z]|nvme[0-9]*n[0-9]*", ATTR{queue/rotational}=="0", ATTR{queue/scheduler}="bfq"

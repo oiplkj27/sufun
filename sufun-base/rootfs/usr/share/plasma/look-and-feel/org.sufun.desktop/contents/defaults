@@ -1,0 +1,18 @@
+# Applied when you pick "SUFUN" in System Settings > Global Theme.
+[kdeglobals][General]
+ColorScheme=FluentLight
+
+[kdeglobals][Icons]
+Theme=Fluent
+
+[kdeglobals][KDE]
+widgetStyle=Breeze
+
+[plasmarc][Theme]
+name=Fluent-light-solid
+
+[kwinrc][org.kde.kdecoration2]
+library=org.kde.breeze
+theme=Breeze
+ButtonsOnLeft=
+ButtonsOnRight=IAX

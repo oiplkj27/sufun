@@ -1,0 +1,25 @@
+# System-wide KDE defaults for every new user (live USB and installed system).
+# The sufun-base PKGBUILD appends the FluentLight color groups ([Colors:*]) to the end of this file.
+
+[General]
+ColorScheme=FluentLight
+font=Selawik,10,-1,5,400,0,0,0,0,0,0,0,0,0,0,1
+menuFont=Selawik,10,-1,5,400,0,0,0,0,0,0,0,0,0,0,1
+toolBarFont=Selawik,10,-1,5,400,0,0,0,0,0,0,0,0,0,0,1
+smallestReadableFont=Selawik,8,-1,5,400,0,0,0,0,0,0,0,0,0,0,1
+fixed=DejaVu Sans Mono,10,-1,5,400,0,0,0,0,0,0,0,0,0,0,1
+
+[Icons]
+Theme=Fluent
+
+[KDE]
+# Our Windows 11-style layout (bottom taskbar, centered icons)
+LookAndFeelPackage=org.sufun.desktop
+widgetStyle=Breeze
+# Faster animations feel snappier on the weak GPU
+AnimationDurationFactor=0.5
+# Double-click to open files, like Windows
+SingleClick=false
+
+[WM]
+activeFont=Selawik,10,-1,5,600,0,0,0,0,0,0,0,0,0,0,1

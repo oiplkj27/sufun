@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+# SUFUN 업데이트 설치 (command line):   sudo sufun-update sufun-update-1.1.sufun
+#
+# A .sufun file is a tar archive:
+#   manifest            format=1, version=..., min_from=...
+#   notes.ko.txt        release notes (Korean)
+#   packages/*.pkg.tar.zst + .sig   sufun-base, sufun-keyring and our other packages
+#   SHA256SUMS          checksums of every file above
+#   SHA256SUMS.sig      SUFUN signature of SHA256SUMS
+# Safety checks, in this order (any failure = nothing is installed):
+#   1. only expected file names, only plain files      -> "손상된 파일"
+#   2. SHA256SUMS.sig is a good signature by a SUFUN key (not revoked/expired)
+#   3. every file matches SHA256SUMS, no extra files
+#   4. every package has its own good SUFUN signature (pacman checks it again)
+#   5. new version > installed version, installed version >= min_from
+# Options: --yes (no question), --check (only verify and print the manifest), --gui (messages for sufun-update-gui)
+set -uo pipefail
+
+KEYRING=/usr/share/sufun/keys/sufun-release.gpg
+TRUSTED=/usr/share/sufun/keys/trusted
+LOG=/var/log/sufun-update.log
+
+YES=0 CHECK=0 GUI=0 FILE=
+for a in "$@"; do
+  case "$a" in
+    --yes) YES=1 ;; --check) CHECK=1 ;; --gui) GUI=1 ;;
+    -h|--help) sed -n '2,4p' "$0"; exit 0 ;;
+    *) FILE="$a" ;;
+  esac
+done
+
+fail() {  # Korean message for people, prefixed line for the GUI
+  printf '\e[1;31m오류: %s\e[0m\n' "$1" >&2
+  [[ $GUI == 1 ]] && printf 'SUFUN-ERROR: %s\n' "$1"
+  exit 1
+}
+info() { printf '\e[1;36m==> %s\e[0m\n' "$*"; }
+
+[[ -n $FILE ]] || fail "업데이트 파일을 지정하세요. 예: sudo sufun-update sufun-update-1.1.sufun"
+[[ -f $FILE ]] || fail "파일을 찾을 수 없습니다: $FILE"
+if [[ $CHECK == 0 && $EUID -ne 0 ]]; then
+  fail "관리자 권한이 필요합니다. 'sudo sufun-update $FILE' 로 실행하세요."
+fi
+[[ -s $KEYRING ]] || fail "이 시스템에 SUFUN 서명 키가 없어 업데이트 파일을 확인할 수 없습니다. (sufun-keyring 패키지 확인)"
+
+WORK=$(mktemp -d /var/tmp/sufun-update.XXXXXX) || fail "임시 폴더를 만들 수 없습니다."
+chmod 700 "$WORK"
+cleanup() { rm -rf "$WORK"; rm -f /var/lib/pacman/sync/sufun-update.db; }
+trap cleanup EXIT
+BAD="이 파일은 손상되었거나 SUFUN 업데이트 파일이 아닙니다. 설치하지 않습니다."
+
+# --- 1. file names and types (before extracting anything) ---
+NAME_RE='^(manifest|notes\.ko\.txt|SHA256SUMS|SHA256SUMS\.sig|packages/|packages/[A-Za-z0-9@._+-]+\.pkg\.tar\.zst(\.sig)?)$'
+listing=$(tar -tf "$FILE" 2>/dev/null) || fail "$BAD"
+[[ -n $listing ]] || fail "$BAD"
+while IFS= read -r n; do
+  n=${n#./}
+  [[ -z $n || $n =~ $NAME_RE ]] || fail "$BAD (예상하지 못한 파일: $n)"
+done <<< "$listing"
+# Only regular files and directories (no links, devices...)
+tar -tvf "$FILE" 2>/dev/null | cut -c1 | grep -qv '^[-d]$' && fail "$BAD (링크 또는 특수 파일 포함)"
+tar -xf "$FILE" -C "$WORK" --no-same-owner --no-same-permissions 2>/dev/null || fail "$BAD"
+cd "$WORK" || fail "$BAD"
+for f in manifest notes.ko.txt SHA256SUMS SHA256SUMS.sig; do [[ -f $f ]] || fail "$BAD ($f 없음)"; done
+
+# --- 2. signature of SHA256SUMS ---
+SIGBAD="서명이 올바르지 않습니다. 이 파일은 공식 SUFUN 업데이트가 아니거나 변조되었습니다. 설치하지 않습니다."
+verify_sig() {  # verify_sig <sigfile> <datafile> ; good = signed by a trusted, valid SUFUN key
+  local st
+  st=$(gpgv --status-fd 1 --keyring "$KEYRING" "$1" "$2" 2>/dev/null) || return 1
+  grep -q '^\[GNUPG:\] GOODSIG ' <<< "$st" || return 1
+  # gpgv can report "good" for a revoked or expired key; refuse those.
+  grep -qE '^\[GNUPG:\] (REVKEYSIG|EXPKEYSIG|KEYREVOKED|KEYEXPIRED|EXPSIG) ' <<< "$st" && return 1
+  # Primary key fingerprint (last field of VALIDSIG) must be in our trusted list
+  local prim
+  prim=$(awk '$2=="VALIDSIG"{print $NF}' <<< "$st")
+  [[ -n $prim ]] && grep -q "^${prim}:" "$TRUSTED"
+}
+verify_sig SHA256SUMS.sig SHA256SUMS || fail "$SIGBAD"
+
+# --- 3. checksums: every file listed, every listed file present ---
+sha256sum --strict --quiet -c SHA256SUMS >/dev/null 2>&1 || fail "$BAD (체크섬 불일치)"
+listed=$(awk '{sub(/^\*/,"",$2); print $2}' SHA256SUMS | sort)
+present=$(find . -type f ! -name SHA256SUMS ! -name SHA256SUMS.sig | sed 's|^\./||' | sort)
+[[ $listed == "$present" ]] || fail "$BAD (체크섬 목록과 파일이 다릅니다)"
+
+# --- manifest (read as plain text, never executed) ---
+mf() { sed -n "s/^$1=//p" manifest | head -n1; }
+VER_RE='^[0-9][0-9A-Za-z.+~]*$'
+FORMAT=$(mf format) NEW=$(mf version) MIN=$(mf min_from)
+[[ $FORMAT == 1 ]] || fail "이 업데이트 파일 형식($FORMAT)은 이 버전의 SUFUN에서 지원하지 않습니다."
+[[ $NEW =~ $VER_RE ]] || fail "$BAD (버전 정보 오류)"
+[[ -z $MIN || $MIN =~ $VER_RE ]] || fail "$BAD (최소 버전 정보 오류)"
+CUR=$(pacman -Q sufun-base 2>/dev/null | awk '{print $2}' | sed 's/-[0-9]*$//')
+CUR=${CUR:-0}
+
+if [[ $CHECK == 1 ]]; then   # used by the GUI before asking for the password
+  printf 'current=%s\nversion=%s\nmin_from=%s\n' "$CUR" "$NEW" "$MIN"
+  exit 0
+fi
+
+# --- 4. each package: SUFUN signature ---
+shopt -s nullglob
+pkgs=(packages/*.pkg.tar.zst)
+((${#pkgs[@]})) || fail "$BAD (패키지 없음)"
+for p in "${pkgs[@]}"; do
+  [[ -f $p.sig ]] || fail "$SIGBAD ($(basename "$p") 서명 없음)"
+  verify_sig "$p.sig" "$p" || fail "$SIGBAD ($(basename "$p"))"
+done
+base_pkg=$(printf '%s\n' "${pkgs[@]}" | grep -E '/sufun-base-[^-]+-[0-9]+-any\.pkg\.tar\.zst$' | head -n1)
+[[ -n $base_pkg ]] || fail "$BAD (sufun-base 패키지 없음)"
+pkgver=$(pacman -Qp "$base_pkg" 2>/dev/null | awk '{print $2}' | sed 's/-[0-9]*$//')
+[[ $pkgver == "$NEW" ]] || fail "$BAD (버전이 서로 다릅니다: $pkgver / $NEW)"
+
+# --- 5. version rules ---
+if (( $(vercmp "$NEW" "$CUR") <= 0 )); then
+  fail "이미 같은 버전이나 더 새 버전($CUR)이 설치되어 있습니다. 이전 버전($NEW)으로는 되돌릴 수 없습니다."
+fi
+if [[ -n $MIN ]] && (( $(vercmp "$CUR" "$MIN") < 0 )); then
+  fail "이 업데이트는 SUFUN $MIN 이상에서만 설치할 수 있습니다. 지금은 $CUR 입니다. 먼저 중간 버전의 업데이트를 설치하세요."
+fi
+
+info "SUFUN $CUR → $NEW"
+echo "------------------------------------------------------------"
+cat notes.ko.txt
+echo "------------------------------------------------------------"
+if [[ $YES == 0 ]]; then
+  read -rp "업데이트를 설치할까요? [y/N]: " ans
+  [[ $ans =~ ^[Yy]$ ]] || { echo "취소했습니다."; exit 1; }
+fi
+
+curl -fsI --max-time 15 https://archlinux.org >/dev/null 2>&1 \
+  || fail "인터넷에 연결되어 있지 않습니다. Wi-Fi에 연결한 뒤 다시 시도하세요. (Arch Linux 기본 패키지도 함께 업데이트합니다)"
+
+# --- install: one pacman transaction = one Timeshift snapshot (pacman hook) ---
+# Our packages become a temporary local repository. "PackageRequired" makes
+# pacman itself check every package signature with the SUFUN key.
+repo-add -q packages/sufun-update.db.tar.gz "${pkgs[@]}" || fail "임시 저장소를 만들 수 없습니다."
+CONF="$WORK/pacman.conf"
+cp /etc/pacman.conf "$CONF"
+printf '\n[sufun-update]\nSigLevel = PackageRequired DatabaseNever\nServer = file://%s/packages\n' "$WORK" >> "$CONF"
+
+info "업데이트 설치 중 (Timeshift 백업을 먼저 만듭니다)..."
+{ echo "=== $(date -Is) sufun-update $CUR -> $NEW"; } >> "$LOG"
+# Upgrade the whole system together with sufun-base (no partial upgrades).
+# Our other packages are upgraded by -u if installed, or pulled in as dependencies.
+if ! pacman --config "$CONF" -Syu --noconfirm sufun-base 2>&1 | tee -a "$LOG"; then
+  fail "설치 중 오류가 발생했습니다. 자세한 내용: $LOG  (시스템은 Timeshift로 되돌릴 수 있습니다)"
+fi
+
+info "SUFUN $NEW 설치 완료."
+[[ $GUI == 1 ]] && { echo "SUFUN-OK: $NEW"; exit 0; }
+read -rp "지금 다시 시작할까요? [Y/n]: " r
+[[ ${r:-y} =~ ^[Yy] ]] && systemctl reboot
+exit 0

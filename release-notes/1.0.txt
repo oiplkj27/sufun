@@ -1,0 +1,5 @@
+SUFUN 1.0 — 첫 번째 버전입니다.
+
+- Surface Go 3 전용 Arch Linux (linux-surface 커널, KDE Plasma 6)
+- 한글 입력(Fcitx5), 카메라, LibreOffice(HWP 열기), Steam
+- 업데이트 전 자동 백업(Timeshift), 방화벽, SUFUN 부팅 화면

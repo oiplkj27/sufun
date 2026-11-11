@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Opens a Windows program (.exe / .msi / .lnk) with Wine.
+# The first time, it prepares the Wine folder (~/.wine) and maps the common
+# Korean Windows fonts (Gulim, Dotum, Batang, Malgun Gothic...) to Noto CJK KR,
+# so Korean text shows up instead of empty boxes.
+#
+#   sufun-wine program.exe            run a program
+#   LC_ALL=ko_KR.UTF-8 sufun-wine x   "Korean mode" for old non-Unicode Korean programs
+set -euo pipefail
+
+export WINEPREFIX="${WINEPREFIX:-$HOME/.wine}"
+MARK="$WINEPREFIX/.sufun-setup-done"
+
+setup_prefix() {
+  command -v notify-send >/dev/null && notify-send -i wine "Wine" "Preparing Wine for the first time (about 1 minute)..." || true
+  wineboot --init
+  local key='HKCU\Software\Wine\Fonts\Replacements' f
+  for f in Gulim GulimChe Dotum DotumChe "Malgun Gothic" "MS Shell Dlg" "MS Shell Dlg 2" \
+           "굴림" "굴림체" "돋움" "돋움체" "맑은 고딕"; do
+    wine reg add "$key" /v "$f" /t REG_SZ /d "Noto Sans CJK KR" /f >/dev/null
+  done
+  for f in Batang BatangChe Gungsuh GungsuhChe "바탕" "바탕체" "궁서" "궁서체"; do
+    wine reg add "$key" /v "$f" /t REG_SZ /d "Noto Serif CJK KR" /f >/dev/null
+  done
+  # Smooth (ClearType-like) font rendering
+  wine reg add 'HKCU\Control Panel\Desktop' /v FontSmoothing /t REG_SZ /d 2 /f >/dev/null
+  wine reg add 'HKCU\Control Panel\Desktop' /v FontSmoothingType /t REG_DWORD /d 2 /f >/dev/null
+  wine reg add 'HKCU\Control Panel\Desktop' /v FontSmoothingGamma /t REG_DWORD /d 1400 /f >/dev/null
+  # Match the screen scale (150% = 144 DPI). Wine does not read the desktop's
+  # scale itself; without this, Windows programs are tiny on the 10.5" screen.
+  # Change later with: winecfg > Graphics > Screen resolution.
+  wine reg add 'HKCU\Control Panel\Desktop' /v LogPixels /t REG_DWORD /d 144 /f >/dev/null
+  wineserver -w
+  touch "$MARK"
+}
+
+[[ -f $MARK ]] || setup_prefix
+
+[[ $# -gt 0 ]] || exec winecfg
+file="$1"; shift
+case "${file,,}" in
+  *.msi) exec wine msiexec /i "$file" "$@" ;;
+  *.lnk) exec wine start /unix "$file" "$@" ;;
+  *)     cd "$(dirname "$file")"          # many programs expect to start in their own folder
+         exec wine "$file" "$@" ;;
+esac

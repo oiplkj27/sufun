@@ -1,0 +1,24 @@
+# Build output (huge, made by build.sh)
+work/
+out/
+
+# Signing keys: NEVER commit private keys or backups.
+# Only the PUBLIC key keys/sufun.asc and the revocation list may be committed.
+keys/*
+!keys/sufun.asc
+!keys/sufun-revoked
+*SECRET*
+*secret*
+*-subkey-*.asc
+*.rev
+*.gpg
+*.kbx
+*.key
+SUFUN-KEY*/
+openpgp-revocs.d/
+private-keys-v1.d/
+
+# Local tests / editors
+test-results/
+*.qcow2
+*.iso

@@ -1,0 +1,31 @@
+# Fluent theme parts used by SUFUN: the light color scheme and the
+# "solid" (no transparency) Plasma style. Kvantum and Aurorae from the same
+# project are left out on purpose: they cost CPU and RAM on this hardware.
+pkgname=sufun-fluent-theme
+_commit=44794f29c89de994b0179aebabd2f5776c90d236
+pkgver=r105.44794f2
+pkgrel=1
+pkgdesc="Fluent light color scheme + solid Plasma style (from vinceliuice/Fluent-kde)"
+arch=(any)
+url=https://github.com/vinceliuice/Fluent-kde
+license=(GPL-3.0-only)
+# Pinned commit as a tarball with a real checksum (no "SKIP").
+source=("Fluent-kde-${_commit}.tar.gz::${url}/archive/${_commit}.tar.gz")
+sha256sums=('b30c2f6350fc8f611807fb53eb2c2c1631e477a20df4f9872fa272b49ec211a4')
+
+# The upstream install.sh picks its target from $UID: as root it writes to
+# /usr/share, otherwise to $HOME. package() runs under fakeroot, where $UID is 0,
+# so the script must run here in build() (normal user) with a scratch $HOME.
+build() {
+  cd "Fluent-kde-${_commit}"
+  rm -rf "$srcdir/fakehome" && mkdir -p "$srcdir/fakehome"
+  HOME="$srcdir/fakehome" bash ./install.sh --solid -t default -c light
+}
+
+# Only copying here: keep just the two pieces we use.
+package() {
+  local s="$srcdir/fakehome/.local/share"
+  install -Dm644 "$s/color-schemes/FluentLight.colors" "$pkgdir/usr/share/color-schemes/FluentLight.colors"
+  install -d "$pkgdir/usr/share/plasma/desktoptheme"
+  cp -r "$s/plasma/desktoptheme/Fluent-light-solid" "$pkgdir/usr/share/plasma/desktoptheme/"
+}

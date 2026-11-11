@@ -1,0 +1,249 @@
+#!/usr/bin/env bash
+# SUFUN installer (SUFUN = Arch Linux made for the Microsoft Surface Go 3).
+# Run from the live session (needs internet).
+# WARNING: erases the whole target disk (including Windows).
+#
+# Automatic test mode (CI only): all answers come from environment variables
+# (SUFUN_DISK, SUFUN_HOST, SUFUN_USER, SUFUN_PASS, SUFUN_TZ, SUFUN_LANG).
+# It runs ONLY when all three are true, so it can never start by accident on a
+# real Surface: SUFUN_AUTO=1, the kernel option "sufun.test=install", and the
+# computer is a QEMU virtual machine.
+set -euo pipefail
+
+[[ $EUID -eq 0 ]] || exec sudo "$0" "$@"
+
+SHARE=/usr/share/sufun-iso
+SURFACE_KEY=56C464BAAC421453
+# btrfs options: noatime = don't write on every file read; zstd:1 = fast compression
+BTRFS_OPTS=noatime,compress=zstd:1
+
+AUTO=0
+if [[ ${SUFUN_AUTO:-0} == 1 ]]; then
+  if grep -qw 'sufun.test=install' /proc/cmdline \
+     && [[ $(cat /sys/class/dmi/id/sys_vendor 2>/dev/null) == QEMU ]]; then
+    AUTO=1
+  else
+    echo "Test mode refused: only allowed in the CI virtual machine." >&2
+    exit 1
+  fi
+fi
+
+bold() { printf '\e[1m%s\e[0m\n' "$*"; }
+die()  {
+  printf '\e[1;31mError: %s\e[0m\n' "$*" >&2
+  (( AUTO )) || read -rp "Press Enter to close..."
+  exit 1
+}
+trap 'die "installation failed on line $LINENO"' ERR
+ask() {  # ask <NAME> <prompt> <default> -> answer in $ANS_<NAME>
+        # (in test mode the answer comes from $SUFUN_<NAME>)
+  local name=$1 prompt=$2 def=$3 ans envv="SUFUN_$1"
+  if (( AUTO )); then ans=${!envv:-$def}; else read -rp "$prompt [$def]: " ans; fi
+  printf -v "ANS_$name" '%s' "${ans:-$def}"
+}
+
+(( AUTO )) || clear
+bold "=== SUFUN installer (for the Microsoft Surface Go 3) ==="
+echo
+
+# --- checks ---
+[[ -d /sys/firmware/efi ]] || die "Not booted in UEFI mode."
+curl -fsI --max-time 10 https://archlinux.org >/dev/null \
+  || die "No internet. Connect to Wi-Fi from the network icon in the taskbar, then run this again."
+
+# --- target disk ---
+bold "Available disks:"
+lsblk -dpno NAME,SIZE,MODEL,TRAN -e 7,11 | grep -v 'usb' || true
+echo
+default_disk=$(lsblk -dpno NAME -e 7,11 | grep -E 'mmcblk[0-9]$|nvme[0-9]n[0-9]$|vd[a-z]$' | head -n1 || true)
+ask DISK "Install to which disk?" "$default_disk"; DISK=$ANS_DISK
+[[ -b $DISK ]] || die "$DISK is not a disk."
+
+# --- user settings ---
+ask HOST "Computer name" sufun;          HOST_NAME=$ANS_HOST
+ask USER "Username" user;                USER_NAME=$ANS_USER
+[[ $USER_NAME =~ ^[a-z_][a-z0-9_-]*$ ]] || die "Username must be lowercase letters/numbers."
+if (( AUTO )); then
+  PASS1=${SUFUN_PASS:?}
+else
+  while :; do
+    read -rsp "Password: " PASS1; echo
+    read -rsp "Password again: " PASS2; echo
+    [[ -n $PASS1 && $PASS1 == "$PASS2" ]] && break
+    echo "Passwords are empty or do not match, try again."
+  done
+fi
+ask TZ "Timezone" Asia/Seoul;            TZONE=$ANS_TZ
+[[ -f /usr/share/zoneinfo/$TZONE ]] || die "Unknown timezone $TZONE"
+ask LANG "Language: 1) English  2) 한국어" 1
+[[ $ANS_LANG == 2 ]] && LANG_SEL=ko_KR.UTF-8 || LANG_SEL=en_US.UTF-8
+
+echo
+bold "ALL DATA ON $DISK WILL BE ERASED (Windows included)."
+lsblk "$DISK"
+if (( ! AUTO )); then
+  read -rp "Type ERASE to continue: " ok
+  [[ $ok == ERASE ]] || die "Cancelled."
+fi
+
+# --- partition: 1 GiB EFI (holds kernels) + btrfs root. No swap partition/file:
+#     swap lives in RAM (zram), so the eMMC is never used for swap. ---
+[[ $DISK =~ [0-9]$ ]] && P="${DISK}p" || P="$DISK"
+bold "Partitioning $DISK"
+umount -R /mnt 2>/dev/null || true
+wipefs -af "$DISK"
+sgdisk --zap-all "$DISK"
+sgdisk -n1:0:+1G -t1:ef00 -c1:EFI -n2:0:0 -t2:8304 -c2:sufun-root "$DISK"
+partprobe "$DISK"; udevadm settle
+mkfs.fat -F32 -n EFI "${P}1"
+mkfs.btrfs -f -L sufun-root "${P}2"
+
+# Subvolumes (the layout Timeshift needs: @ and @home at the top level):
+#   @ = system (snapshotted by Timeshift), @home = your files,
+#   @log and @pkg = kept OUT of system snapshots (logs, downloaded packages).
+mount "${P}2" /mnt
+for sv in @ @home @log @pkg; do btrfs subvolume create "/mnt/$sv"; done
+umount /mnt
+mount -o "$BTRFS_OPTS,subvol=@" "${P}2" /mnt
+mount --mkdir -o "$BTRFS_OPTS,subvol=@home" "${P}2" /mnt/home
+mount --mkdir -o "$BTRFS_OPTS,subvol=@log"  "${P}2" /mnt/var/log
+mount --mkdir -o "$BTRFS_OPTS,subvol=@pkg"  "${P}2" /mnt/var/cache/pacman/pkg
+mount --mkdir -o umask=0077 "${P}1" /mnt/boot
+
+# --- package repos ---
+bold "Setting up package repositories"
+pacman-key --add "$SHARE/surface.asc"
+pacman-key --lsign-key "$SURFACE_KEY"
+TARGET_CONF=/tmp/sufun-pacman.conf         # becomes the installed system's pacman.conf
+cp /etc/pacman.conf "$TARGET_CONF"
+sed -i 's/^#ParallelDownloads/ParallelDownloads/' "$TARGET_CONF"
+sed -i '/^#\[multilib\]/{s/^#//;n;s/^#//}' "$TARGET_CONF"          # Steam needs [multilib]
+grep -q '^\[linux-surface\]' "$TARGET_CONF" || printf '\n[linux-surface]\nServer = https://pkg.surfacelinux.com/arch/\n' >> "$TARGET_CONF"
+# Install-time only: our local repo on the USB (sufun-base, fonts, theme...)
+INSTALL_CONF=/tmp/sufun-pacman-install.conf
+cp "$TARGET_CONF" "$INSTALL_CONF"
+printf '\n[sufun-local]\nSigLevel = Optional TrustAll\nServer = file://%s/repo\n' "$SHARE" >> "$INSTALL_CONF"
+
+bold "Downloading and installing packages (takes 10-30 minutes)"
+# sufun-base pulls in the whole desktop. The desktop list is also given directly,
+# so the explicit driver choices (vulkan-intel, lib32-mesa...) are used by pacman.
+mapfile -t PKGS < <(sed -e 's/#.*//' -e 's/[[:space:]]//g' -e '/^$/d' "$SHARE/install.txt" "$SHARE/desktop.txt")
+pacstrap -C "$INSTALL_CONF" /mnt "${PKGS[@]}" sufun-base   # host keyring (with surface key) is copied in
+cp "$TARGET_CONF" /mnt/etc/pacman.conf
+
+# fstab: genfstab writes "subvolid=..."; after a Timeshift restore "@" gets a NEW
+# id, and a subvolid entry would then stop the system from booting. Keep only the
+# names (subvol=/@ ...).
+genfstab -U /mnt >> /mnt/etc/fstab
+sed -i -E 's/,subvolid=[0-9]+//; s/subvolid=[0-9]+,//' /mnt/etc/fstab
+grep -q subvolid /mnt/etc/fstab && die "could not remove subvolid from fstab"
+
+# Timeshift in btrfs mode: snapshots of @ only (not @home), no schedule.
+# The pacman hook makes one before every update and keeps the newest 3.
+ROOT_UUID_FS=$(blkid -s UUID -o value "${P}2")
+install -d /mnt/etc/timeshift
+cat > /mnt/etc/timeshift/timeshift.json <<EOF
+{
+  "backup_device_uuid" : "$ROOT_UUID_FS",
+  "parent_device_uuid" : "",
+  "do_first_run" : "false",
+  "btrfs_mode" : "true",
+  "include_btrfs_home_for_backup" : "false",
+  "include_btrfs_home_for_restore" : "false",
+  "stop_cron_emails" : "true",
+  "schedule_monthly" : "false",
+  "schedule_weekly" : "false",
+  "schedule_daily" : "false",
+  "schedule_hourly" : "false",
+  "schedule_boot" : "false",
+  "count_monthly" : "2",
+  "count_weekly" : "3",
+  "count_daily" : "5",
+  "count_hourly" : "6",
+  "count_boot" : "5",
+  "date_format" : "%Y-%m-%d %H:%M:%S",
+  "exclude" : [],
+  "exclude-apps" : []
+}
+EOF
+
+# Firewall: block incoming, allow outgoing (ufw's defaults, set explicitly here).
+# Replies to your own connections (web, DHCP for Wi-Fi addresses) are allowed by
+# ufw's built-in rules. Bluetooth and phone file transfer (USB/MTP) don't use IP.
+sed -i 's/^ENABLED=.*/ENABLED=yes/' /mnt/etc/ufw/ufw.conf
+sed -i -e 's/^DEFAULT_INPUT_POLICY=.*/DEFAULT_INPUT_POLICY="DROP"/' \
+       -e 's/^DEFAULT_OUTPUT_POLICY=.*/DEFAULT_OUTPUT_POLICY="ACCEPT"/' \
+       -e 's/^DEFAULT_FORWARD_POLICY=.*/DEFAULT_FORWARD_POLICY="DROP"/' /mnt/etc/default/ufw
+
+# --- system config ---
+bold "Configuring the system"
+arch-chroot /mnt /bin/bash -e -s -- "$HOST_NAME" "$USER_NAME" "$TZONE" "$LANG_SEL" <<'CHROOT'
+HOST_NAME=$1 USER_NAME=$2 TZONE=$3 LANG_SEL=$4
+ln -sf "/usr/share/zoneinfo/$TZONE" /etc/localtime
+hwclock --systohc
+sed -i -E 's/^#(en_US\.UTF-8|ko_KR\.UTF-8)/\1/' /etc/locale.gen
+locale-gen
+echo "LANG=$LANG_SEL" > /etc/locale.conf
+echo "KEYMAP=us" > /etc/vconsole.conf
+echo "$HOST_NAME" > /etc/hostname
+printf '127.0.0.1 localhost\n::1 localhost\n127.0.1.1 %s\n' "$HOST_NAME" > /etc/hosts
+useradd -m -G wheel,video,audio,input -s /bin/bash "$USER_NAME"
+echo '%wheel ALL=(ALL:ALL) ALL' > /etc/sudoers.d/10-wheel
+chmod 440 /etc/sudoers.d/10-wheel
+passwd -l root
+systemctl enable NetworkManager sddm power-profiles-daemon thermald \
+  earlyoom ananicy-cpp systemd-timesyncd fstrim.timer paccache.timer ufw
+# Bluetooth starts on demand (D-Bus), not at boot. CUPS (printing) is not installed.
+ln -sf /usr/lib/systemd/system/bluetooth.service /etc/systemd/system/dbus-org.bluez.service
+# The initramfs (with the SUFUN boot screen) was built by pacman's hooks during
+# pacstrap; build it once more now that vconsole.conf exists.
+mkinitcpio -P
+bootctl install
+CHROOT
+printf '%s:%s\n' "$USER_NAME" "$PASS1" | arch-chroot /mnt chpasswd
+
+# --- bootloader entries (systemd-boot) ---
+ROOT_UUID=$(blkid -s PARTUUID -o value "${P}2")
+# quiet + splash = SUFUN boot screen (Plymouth) instead of text
+OPTS="root=PARTUUID=$ROOT_UUID rootflags=subvol=@ rw quiet splash loglevel=3 nowatchdog"
+(( AUTO )) && OPTS="$OPTS console=ttyS0,115200 console=tty0 sufun.test=installed"
+cat > /mnt/boot/loader/loader.conf <<EOF
+default sufun.conf
+timeout 2
+console-mode max
+editor no
+EOF
+cat > /mnt/boot/loader/entries/sufun.conf <<EOF
+title   SUFUN
+linux   /vmlinuz-linux-surface
+initrd  /intel-ucode.img
+initrd  /initramfs-linux-surface.img
+options $OPTS
+EOF
+if [[ -f /mnt/boot/initramfs-linux-surface-fallback.img ]]; then
+  cat > /mnt/boot/loader/entries/sufun-fallback.conf <<EOF
+title   SUFUN (fallback)
+linux   /vmlinuz-linux-surface
+initrd  /intel-ucode.img
+initrd  /initramfs-linux-surface-fallback.img
+options ${OPTS/ quiet splash/}
+EOF
+fi
+
+# Test mode: the installed system checks itself on its first boot.
+if (( AUTO )); then
+  install -Dm755 /usr/local/bin/sufun-selftest /mnt/usr/local/bin/sufun-selftest
+  install -Dm644 /etc/systemd/system/sufun-selftest.service /mnt/etc/systemd/system/sufun-selftest.service
+  arch-chroot /mnt systemctl enable sufun-selftest.service
+fi
+
+sync
+umount -R /mnt
+trap - ERR
+echo
+bold "Installation complete! Remove the USB drive and reboot."
+if (( AUTO )); then echo "SUFUN-TEST: INSTALL-OK"; exit 0; fi
+echo
+echo "Tip: protect this Surface with a UEFI password now (see the README, 'UEFI 암호')."
+read -rp "Reboot now? [Y/n]: " r
+[[ ${r:-y} =~ ^[Yy] ]] && systemctl reboot

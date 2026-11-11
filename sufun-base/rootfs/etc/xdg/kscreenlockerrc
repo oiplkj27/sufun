@@ -1,0 +1,8 @@
+# Lock screen defaults (System Settings > Screen Locking)
+[Daemon]
+# Lock after 5 minutes without use
+Autolock=true
+Timeout=5
+# Lock when waking up from sleep (opening the Type Cover shows the lock screen)
+LockOnResume=true
+RequirePassword=true

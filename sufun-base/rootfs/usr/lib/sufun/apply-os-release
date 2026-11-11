@@ -1,0 +1,7 @@
+#!/bin/sh
+# Copies the SUFUN os-release over Arch's. /etc/os-release is a symlink to it.
+install -m644 /usr/share/sufun/os-release /usr/lib/os-release
+if [ -f /etc/lsb-release ]; then
+  . /usr/share/sufun/os-release
+  printf 'DISTRIB_ID="SUFUN"\nDISTRIB_RELEASE="%s"\nDISTRIB_DESCRIPTION="%s"\n' "$VERSION_ID" "$PRETTY_NAME" > /etc/lsb-release
+fi

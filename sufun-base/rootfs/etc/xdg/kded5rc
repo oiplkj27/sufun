@@ -1,0 +1,32 @@
+# KDE background modules (kded) this device never needs. Each one is a small
+# plugin loaded into the kded6 process at login; switching them off saves a few MB
+# of RAM and some wake-ups. (KF6 still uses the file name "kded5rc".)
+# NOT touched: Wi-Fi (networkmanagement), Bluetooth (bluedevil), sound and media keys
+# (audioshortcutsservice, mprisservice), USB drives (device_automounter, soliduiserver,
+# solidautoeject, devicenotifications), tray (statusnotifierwatcher), low-disk warning
+# (freespacenotifier). Battery, screen rotation and the Type Cover are handled by
+# PowerDevil and KWin, not by kded.
+
+# Yearly "donate to KDE" pop-up
+[Module-donationmessage]
+autoload=false
+
+# Watches Windows network shares (SMB) for changes - no network shares used
+[Module-smbwatcher]
+autoload=false
+
+# Proxy auto-detection (WPAD) - home/school Wi-Fi has no proxy
+[Module-wpad_detector]
+autoload=false
+
+# Watches remote:/ network folders - not used
+[Module-remotedirnotify]
+autoload=false
+
+# Global menu bar service - our taskbar has no global menu
+[Module-appmenu]
+autoload=false
+
+# Updates Baloo search folders - the Baloo file indexer is switched off (baloofilerc)
+[Module-baloosearchmodule]
+autoload=false

@@ -1,0 +1,4 @@
+# Extra packages for the INSTALLED system only (sufun-base brings the desktop).
+base
+mkinitcpio
+btrfs-progs              # root filesystem is btrfs with zstd compression

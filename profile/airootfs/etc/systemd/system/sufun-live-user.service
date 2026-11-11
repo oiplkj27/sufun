@@ -1,0 +1,12 @@
+[Unit]
+Description=Create the passwordless live-session user
+Before=display-manager.service
+ConditionPathExists=!/home/sufun
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/useradd -m -G wheel,video,audio,input -s /bin/bash -c "SUFUN" sufun
+ExecStart=/usr/bin/passwd -d sufun
+
+[Install]
+WantedBy=multi-user.target

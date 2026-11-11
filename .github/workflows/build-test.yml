@@ -1,0 +1,84 @@
+# Shared steps: build the ISO + our packages, then boot-test them in QEMU.
+# Called by build-iso.yml (every push to main) and release.yml (version tags).
+# This workflow never sees the signing key.
+name: Build and test (shared)
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+      # -v /:/host lets the first step delete big unused tools on the runner itself
+      options: --privileged -v /:/host
+    steps:
+      - name: Free disk space on the runner
+        run: |
+          rm -rf /host/usr/share/dotnet /host/usr/local/lib/android /host/opt/ghc /host/opt/hostedtoolcache /host/usr/local/share/boost
+          df -h /
+
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: pacman -Syu --noconfirm --needed archiso curl
+
+      - name: Build ISO
+        run: bash ./build.sh
+
+      - name: Upload ISO
+        uses: actions/upload-artifact@v4
+        with:
+          name: sufun-iso
+          path: out/*.iso
+          compression-level: 0
+          retention-days: 14
+
+      - name: Upload packages (for the release job)
+        uses: actions/upload-artifact@v4
+        with:
+          name: sufun-packages
+          path: out/packages/
+          retention-days: 14
+
+  test:
+    needs: build
+    runs-on: ubuntu-latest      # directly on the runner (not in a container), so KVM works
+    steps:
+      - name: Free disk space on the runner (ISO + growing 64 GB virtual disk)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache /usr/local/share/boost
+          df -h /
+
+      - uses: actions/checkout@v4
+
+      - name: Enable KVM (hardware virtualization) if the runner has it
+        run: |
+          if [ -e /dev/kvm ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+            sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+          fi
+          ls -l /dev/kvm || echo "no KVM: tests use slow software emulation"
+
+      - name: Install QEMU and UEFI firmware
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils ovmf xorriso python3
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sufun-iso
+          path: iso
+
+      - name: Boot and install test
+        run: bash scripts/ci/qemu-test.sh iso/*.iso "$(tr -d '[:space:]' < VERSION)" test-results
+
+      - name: Upload screenshots and serial logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sufun-test-results
+          path: test-results/
+          retention-days: 14

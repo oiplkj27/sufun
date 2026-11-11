@@ -1,0 +1,17 @@
+# Fcitx5 input methods for every new user: English (US keyboard) + Korean (Hangul).
+# Switch with the Hangul key, Shift+Space or Right Alt (see "config").
+[Groups/0]
+Name=Default
+Default Layout=us
+DefaultIM=hangul
+
+[Groups/0/Items/0]
+Name=keyboard-us
+Layout=
+
+[Groups/0/Items/1]
+Name=hangul
+Layout=
+
+[GroupOrder]
+0=Default

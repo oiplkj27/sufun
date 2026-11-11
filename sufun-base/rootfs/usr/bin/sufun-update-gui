@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Opens when you double-click a .sufun file.
+# 1. checks the file (signature, checksums) as the normal user and shows the
+#    version and release notes, 2. asks for the admin password (polkit/pkexec),
+# 3. runs sufun-update (which makes a Timeshift snapshot first), 4. offers a reboot.
+set -uo pipefail
+FILE="${1:-}"
+T="SUFUN 업데이트"
+err() { kdialog --title "$T" --error "$1"; exit 1; }
+[[ -f $FILE ]] || err "업데이트 파일을 찾을 수 없습니다."
+
+out=$(sufun-update --check --gui "$FILE" 2>/dev/null)
+if [[ $? -ne 0 ]]; then
+  err "$(sed -n 's/^SUFUN-ERROR: //p' <<< "$out" | head -n1)"
+fi
+cur=$(sed -n 's/^current=//p' <<< "$out"); new=$(sed -n 's/^version=//p' <<< "$out")
+notes=$(tar -xOf "$FILE" notes.ko.txt 2>/dev/null | head -c 4000)   # already verified by --check
+
+kdialog --title "$T" --yes-label "업데이트" --no-label "취소" --yesno \
+"현재 버전: SUFUN $cur
+새 버전:   SUFUN $new
+
+변경 내용:
+$notes
+
+업데이트 전에 시스템 백업(Timeshift 스냅샷)을 자동으로 만듭니다.
+인터넷 연결이 필요합니다. 계속할까요?" || exit 0
+
+LOGF=$(mktemp)
+busy=$(kdialog --title "$T" --progressbar "SUFUN $new 업데이트를 설치하는 중입니다...
+컴퓨터를 끄지 마세요." 0)
+pkexec /usr/bin/sufun-update --yes --gui "$FILE" > "$LOGF" 2>&1
+rc=$?
+# qdbus6 is in qt6-tools, a dependency of kwin and plasma-workspace
+qdbus6 $busy close >/dev/null 2>&1 || true
+
+if [[ $rc -eq 0 ]] && grep -q '^SUFUN-OK:' "$LOGF"; then
+  rm -f "$LOGF"
+  kdialog --title "$T" --yes-label "지금 다시 시작" --no-label "나중에" --yesno \
+    "SUFUN $new 업데이트가 끝났습니다.
+새 설정을 적용하려면 다시 시작하세요." && systemctl reboot
+  exit 0
+fi
+if [[ $rc -eq 126 || $rc -eq 127 ]]; then   # pkexec: password dialog cancelled / not allowed
+  rm -f "$LOGF"; err "관리자 암호 확인이 취소되어 업데이트하지 않았습니다."
+fi
+msg=$(sed -n 's/^SUFUN-ERROR: //p' "$LOGF" | head -n1)
+kdialog --title "$T" --detailederror "${msg:-업데이트 중 오류가 발생했습니다.}" "$(tail -n 40 "$LOGF")"
+rm -f "$LOGF"
+exit 1

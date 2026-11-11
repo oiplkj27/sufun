@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# "시스템 업데이트" launcher: updates all packages from the Arch Linux repositories.
+# The pacman hook makes a Timeshift snapshot first.
+# NOT updated here: our own packages (sufun-base, Selawik font, ananicy rules,
+# H2Orestart, Bottles...). They come with the next .sufun update file.
+echo "=== SUFUN 시스템 업데이트 ==="
+echo "관리자 암호를 입력하세요. (입력하는 동안 글자가 보이지 않습니다)"
+echo
+sudo pacman -Syu
+rc=$?
+echo
+if [[ $rc -eq 0 ]]; then
+  echo "업데이트가 끝났습니다. 커널이나 Plasma가 업데이트되었다면 다시 시작하세요."
+else
+  echo "업데이트가 완료되지 않았습니다 (오류 코드 $rc). 위의 메시지를 확인하세요."
+fi
+read -rp "Enter를 누르면 이 창이 닫힙니다..." _

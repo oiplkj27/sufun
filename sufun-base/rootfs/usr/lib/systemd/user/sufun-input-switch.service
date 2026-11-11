@@ -1,0 +1,12 @@
+[Unit]
+Description=SUFUN: Fcitx5 with the Type Cover, on-screen keyboard in tablet mode
+PartOf=graphical-session.target
+After=plasma-kwin_wayland.service
+
+[Service]
+ExecStart=/usr/lib/sufun/input-switch
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target

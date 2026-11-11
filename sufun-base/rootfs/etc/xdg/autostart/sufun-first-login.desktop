@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=SUFUN first login setup
+Exec=/usr/lib/sufun/first-login
+NoDisplay=true
+OnlyShowIn=KDE;
+X-KDE-autostart-phase=2

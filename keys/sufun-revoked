@@ -1,0 +1,3 @@
+# Fingerprints of SUFUN PRIMARY keys that must no longer be trusted, one per line.
+# Only needed if the primary key itself is lost or leaked (see README, 키 관리).
+# A leaked SIGNING SUBKEY is revoked inside keys/sufun.asc instead (sufun-key.sh rotate).

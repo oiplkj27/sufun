@@ -1,0 +1,15 @@
+# SUFUN: Steam launcher. Same name as Steam's own launcher; /usr/local/share
+# comes first, so this one is used. It starts Steam through sufun's helper,
+# which quits Steam completely when you close its window (see steam-launch).
+[Desktop Entry]
+Name=Steam
+Comment=Application for managing and playing games on Steam
+Comment[ko]=Steam 게임 실행 및 관리
+Exec=/usr/lib/sufun/steam-launch %U
+Icon=steam
+Terminal=false
+Type=Application
+Categories=Network;FileTransfer;Game;
+MimeType=x-scheme-handler/steam;x-scheme-handler/steamlink;
+PrefersNonDefaultGPU=true
+X-KDE-RunOnDiscreteGpu=true

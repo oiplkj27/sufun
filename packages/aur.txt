@@ -1,0 +1,23 @@
+# Packages that are NOT in the official Arch repos.
+# build-local-repo.sh builds them IN THIS ORDER from our own pinned copies in
+# packages/pkgbuilds/ (no downloads from the AUR at build time), puts them in a
+# local repo on the ISO, and sufun-base depends on them.
+# Format: <name>             build and install
+#         <name> build-only  build (others need it to build), but do not install
+# sufun-keyring and sufun-base are always built last, automatically.
+
+# Bottles + its AUR dependencies: switched OFF for the first build (most likely to
+# fail). Remove the "#" from these 5 lines after the first successful build.
+#python-setuptools-reproducible build-only
+#patool
+#fvs2
+#vkbasalt-cli
+#bottles
+
+ttf-selawik                       # Selawik: open-source Segoe UI look-alike by Microsoft
+cachyos-ananicy-rules             # priority rules for ananicy-cpp (pinned release, not -git)
+libreoffice-extension-h2orestart  # opens HWP/HWPX files in LibreOffice
+
+# Our own PKGBUILDs (pinned versions, only the parts we use):
+sufun-fluent-theme                # Fluent color scheme + solid Plasma style (no Kvantum/Aurorae)
+sufun-fluent-icons                # Fluent icons, standard color only

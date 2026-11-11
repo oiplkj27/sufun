@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Runs once for every user, at their first Plasma login.
+MARK="${XDG_CONFIG_HOME:-$HOME/.config}/sufun/first-login-done"
+[[ -f $MARK ]] && exit 0
+sleep 3   # let KWin finish setting up the screens
+
+# Built-in screen at 150%. (Plasma would pick about 160-170% by itself on this
+# 10.5" 1920x1280 panel; 150% gives more room and an exact 3x DPI for older apps:
+# X11 apps such as Wine use 144 DPI = 1.5 x 96 and stay sharp.)
+out=$(kscreen-doctor -o 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' \
+      | awk '/^Output:/ {print $3}' | grep -m1 -E '^eDP')
+[[ -n $out ]] && kscreen-doctor "output.$out.scale.1.5" >/dev/null 2>&1
+
+mkdir -p "$(dirname "$MARK")" && touch "$MARK"

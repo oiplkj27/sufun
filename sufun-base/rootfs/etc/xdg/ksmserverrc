@@ -1,0 +1,3 @@
+# Session restore: never reopen Steam at login (it uses ~400 MB of RAM).
+[General]
+excludeApps=steam,steamwebhelper

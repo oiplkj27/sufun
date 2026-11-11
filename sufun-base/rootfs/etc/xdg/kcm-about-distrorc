@@ -1,0 +1,6 @@
+# Settings > About this System: show SUFUN (values from os-release are used for the rest)
+[General]
+Name=SUFUN
+LogoPath=/usr/share/pixmaps/sufun-logo.png
+Website=@HOME_URL@
+Variant=Surface Go 3

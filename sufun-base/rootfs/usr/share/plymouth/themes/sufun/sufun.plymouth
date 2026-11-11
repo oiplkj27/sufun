@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=SUFUN
+Description=SUFUN boot screen: the word SUFUN with a small spinner, white on black
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/sufun
+ScriptFile=/usr/share/plymouth/themes/sufun/sufun.script

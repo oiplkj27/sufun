@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Picks the keyboard input method from KWin's tablet mode:
+#   laptop (Type Cover attached) -> Fcitx5 (Korean + English typing)
+#   tablet (cover detached or folded back) -> Plasma on-screen keyboard
+# Why: KWin runs only ONE input method at a time, and Fcitx5 has no on-screen
+# keyboard. Without this, the lock screen in tablet mode had no keyboard to type
+# the password with. The on-screen keyboard also works on the lock screen.
+# Writing kwinrc with --notify makes KWin restart the input method right away.
+FCITX=/usr/share/applications/org.fcitx.Fcitx5.desktop
+OSK=/usr/share/applications/org.kde.plasma.keyboard.desktop
+last=""
+
+apply() {  # apply true|false
+  local want=$FCITX
+  [[ $1 == true ]] && want=$OSK
+  [[ $want == "$last" ]] && return
+  kwriteconfig6 --file kwinrc --group Wayland --key InputMethod --notify "$want"
+  last=$want
+}
+
+current() {  # prints true/false
+  busctl --user get-property org.kde.KWin /org/kde/KWin org.kde.KWin.TabletModeManager tabletMode 2>/dev/null \
+    | awk '{print $2}'
+}
+
+# Wait until KWin answers (the service may start before KWin is ready)
+for _ in $(seq 1 30); do s=$(current); [[ -n $s ]] && break; sleep 1; done
+apply "${s:-false}"
+
+# React to every change. gdbus prints one line per signal, e.g.
+#   /org/kde/KWin: org.kde.KWin.TabletModeManager.tabletModeChanged (true,)
+gdbus monitor --session --dest org.kde.KWin --object-path /org/kde/KWin 2>/dev/null |
+while read -r line; do
+  case "$line" in
+    *tabletModeChanged*true*)  apply true ;;
+    *tabletModeChanged*false*) apply false ;;
+  esac
+done

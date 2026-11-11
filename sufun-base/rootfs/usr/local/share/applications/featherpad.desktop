@@ -1,0 +1,23 @@
+# SUFUN: FeatherPad shown as "메모장 / Notepad". This file has the same name as
+# FeatherPad's own launcher; /usr/local/share comes first in the search path,
+# so it wins and survives FeatherPad updates.
+[Desktop Entry]
+Name=Notepad
+Name[ko]=메모장
+GenericName=Text Editor
+GenericName[ko]=텍스트 편집기
+Comment=Edit plain text files
+Comment[ko]=텍스트 파일 편집
+Exec=featherpad %U
+Icon=accessories-text-editor
+Terminal=false
+Type=Application
+MimeType=text/plain;text/x-log;text/markdown;text/x-markdown;application/x-zerosize;
+Categories=Qt;Utility;TextEditor;
+Keywords=notepad;text;editor;메모장;
+Actions=new-window;
+
+[Desktop Action new-window]
+Name=New Window
+Name[ko]=새 창
+Exec=featherpad --win

@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
+  <!-- 3/4 circle; Plymouth rotates it -->
+  <circle cx="24" cy="24" r="18" fill="none" stroke="#ffffff" stroke-opacity="0.25" stroke-width="4"/>
+  <path d="M24 6 A18 18 0 0 1 42 24" fill="none" stroke="#ffffff" stroke-width="4" stroke-linecap="round"/>
+</svg>

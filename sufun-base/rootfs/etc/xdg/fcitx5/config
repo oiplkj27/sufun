@@ -1,0 +1,6 @@
+# Fcitx5: keys that switch between English and Korean.
+# Right Alt is where the 한/영 key is on Korean keyboards; the Type Cover has no Hangul key.
+[Hotkey/TriggerKeys]
+0=Hangul
+1=Shift+space
+2=Alt_R

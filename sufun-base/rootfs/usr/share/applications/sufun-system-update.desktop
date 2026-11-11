@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=시스템 업데이트 (System Update)
+Name[ko]=시스템 업데이트
+Comment=Update all Arch Linux packages (a Timeshift backup is made first)
+Comment[ko]=모든 Arch Linux 패키지를 업데이트합니다 (먼저 Timeshift 백업을 만듭니다)
+Exec=konsole -e /usr/lib/sufun/system-update
+Icon=system-software-update
+Terminal=false
+Categories=System;

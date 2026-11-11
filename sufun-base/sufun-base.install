@@ -1,0 +1,35 @@
+# Settings in files that OTHER packages own. We only change single values in
+# them (never replace the files), so there is no file conflict. Because those
+# files are in the other package's backup list, pacman keeps our change when
+# that package is updated (it writes a .pacnew file instead).
+#
+#   /etc/bluetooth/main.conf      (bluez)     AutoEnable=false: radio off until you switch it on
+#   /etc/plymouth/plymouthd.conf  (plymouth)  Theme=sufun, ShowDelay=0
+#   /usr/lib/os-release           (filesystem) replaced by the 95-sufun-os-release hook
+
+_set_ini() {  # _set_ini <file> <section> <key> <value>
+  local f=$1 s=$2 k=$3 v=$4
+  [ -f "$f" ] || printf '[%s]\n' "$s" > "$f"
+  if grep -q "^${k}=" "$f"; then
+    sed -i "s|^${k}=.*|${k}=${v}|" "$f"
+  elif grep -q "^\[${s}\]" "$f"; then
+    sed -i "/^\[${s}\]/a ${k}=${v}" "$f"
+  else
+    printf '\n[%s]\n%s=%s\n' "$s" "$k" "$v" >> "$f"
+  fi
+}
+
+_apply() {
+  _set_ini /etc/bluetooth/main.conf Policy AutoEnable false
+  _set_ini /etc/plymouth/plymouthd.conf Daemon Theme sufun
+  _set_ini /etc/plymouth/plymouthd.conf Daemon ShowDelay 0
+}
+
+post_install() {
+  _apply
+  echo ">>> SUFUN $1 설치됨"
+}
+post_upgrade() {
+  _apply
+  echo ">>> SUFUN $2 → $1"
+}

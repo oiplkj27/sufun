@@ -1,0 +1,15 @@
+# Only for the automatic tests in GitHub Actions (QEMU virtual machine).
+# Does nothing on a normal boot: it only runs with the kernel option "sufun.test=...".
+[Unit]
+Description=SUFUN automatic test (CI only)
+ConditionKernelCommandLine=sufun.test
+After=multi-user.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/sufun-selftest
+StandardOutput=journal+console
+
+[Install]
+WantedBy=multi-user.target

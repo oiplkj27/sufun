@@ -1,0 +1,23 @@
+[Wayland]
+# Keyboard input method. Default: Fcitx5 (Korean/English typing on the Type Cover).
+# The sufun-input-switch user service changes this automatically:
+#   Type Cover attached -> Fcitx5,  tablet mode -> Plasma on-screen keyboard.
+InputMethod[$e]=/usr/share/applications/org.fcitx.Fcitx5.desktop
+
+[Plugins]
+# Blur and transparency effects off: they cost GPU time on the UHD 615
+blurEnabled=false
+contrastEnabled=false
+translucencyEnabled=false
+wobblywindowsEnabled=false
+
+[ModifierOnlyShortcuts]
+# Pressing Win alone opens the start menu
+Meta=org.kde.plasmashell,/PlasmaShell,org.kde.PlasmaShell,activateLauncherMenu
+
+[org.kde.kdecoration2]
+# Native Breeze window frames (Aurorae themes are slower), buttons like Windows: _ [] X
+library=org.kde.breeze
+theme=Breeze
+ButtonsOnLeft=
+ButtonsOnRight=IAX

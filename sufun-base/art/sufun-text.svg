@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="560" height="140" viewBox="0 0 560 140">
+  <!-- Rendered to sufun.png when sufun-base is built (fonts are only needed then). -->
+  <text x="280" y="108" text-anchor="middle" fill="#ffffff"
+        font-family="Selawik, DejaVu Sans, sans-serif" font-size="120" font-weight="600"
+        letter-spacing="14">SUFUN</text>
+</svg>

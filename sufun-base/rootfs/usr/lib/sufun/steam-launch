@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Starts Steam and makes "closing the Steam window" really quit Steam.
+#
+# Why: Steam normally keeps running in the system tray when you close its
+# window (STEAM_FRAME_FORCE_CLOSE=1 only makes the close button work properly;
+# it does not quit Steam). On 4 GB RAM a hidden Steam wastes ~400 MB.
+#
+# How: while Steam runs, check every 3 seconds whether any Steam window is still
+# visible (Steam is an X11 app, so xdotool can see it). If no window has been
+# visible for ~6 seconds AND no game is running, ask Steam to shut down cleanly
+# ("steam -shutdown"). After Steam's main process has exited, leftover helper
+# processes of THIS user are closed.
+export STEAM_FRAME_FORCE_CLOSE=1
+
+if pgrep -u "$UID" -x steam >/dev/null; then   # already running: just pass the URL/argument on
+  exec /usr/bin/steam "$@"
+fi
+
+/usr/bin/steam "$@" &
+launcher=$!
+
+game_running() {  # Steam starts every game through its "reaper" process
+  pgrep -u "$UID" -x reaper >/dev/null
+}
+# "Open" = a Steam window that is shown OR minimized (X11 WM_STATE Normal/Iconic).
+# A window closed to the tray is "withdrawn" and has no such state.
+steam_window_visible() {
+  [[ -n ${DISPLAY:-} ]] || return 0           # cannot check: never auto-quit
+  local w
+  for w in $(xdotool search --class '^steam$' 2>/dev/null); do
+    xprop -id "$w" WM_STATE 2>/dev/null | grep -qE 'window state: (Normal|Iconic)' && return 0
+  done
+  return 1
+}
+
+# Keep watching while the launcher OR any "steam" process of this user is alive.
+# Steam's bootstrap can restart itself (first start, self-update): then the
+# first /usr/bin/steam process ends, but Steam keeps running.
+steam_alive() {
+  kill -0 "$launcher" 2>/dev/null || pgrep -u "$UID" -x steam >/dev/null
+}
+
+seen=0 hidden=0
+# "|| { sleep 10; steam_alive; }": look once more after 10 s, in case Steam is in
+# the short gap between stopping and restarting itself.
+while steam_alive || { sleep 10; steam_alive; }; do
+  sleep 3
+  pgrep -u "$UID" -x steam >/dev/null || continue
+  if steam_window_visible; then
+    seen=1 hidden=0
+  elif (( seen )) && ! game_running; then
+    (( ++hidden >= 2 )) && { /usr/bin/steam -shutdown >/dev/null 2>&1; seen=0; }
+  fi
+done
+wait "$launcher" 2>/dev/null   # already finished; just collects its exit status
+
+# Main Steam process is gone: close helpers that sometimes stay behind (this user only).
+sleep 5
+if ! pgrep -u "$UID" -x steam >/dev/null; then
+  pkill -u "$UID" -x steamwebhelper 2>/dev/null
+  pkill -u "$UID" -f 'ubuntu12_32/steam' 2>/dev/null
+fi
+exit 0

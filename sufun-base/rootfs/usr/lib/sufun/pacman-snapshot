@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Called by 05-sufun-snapshot.hook before pacman upgrades or removes packages.
+# Makes a Timeshift snapshot of "@" (system; not @home, @log or @pkg) and keeps
+# only the newest 3 snapshots made by this hook. Other snapshots are never touched.
+TAG="sufun-autosnap"          # in the snapshot description, marks our snapshots
+KEEP=3
+warn() { echo "SUFUN: 경고: $* (업데이트는 계속합니다)"; exit 0; }
+
+[[ ${SUFUN_NO_SNAPSHOT:-} == 1 ]] && exit 0
+[[ $(findmnt -no FSTYPE /) == btrfs ]] || exit 0         # live USB, or not our layout
+[[ -f /etc/timeshift/timeshift.json ]] || warn "Timeshift가 설정되지 않았습니다"
+command -v timeshift >/dev/null || warn "timeshift가 없습니다"
+
+timeshift --create --scripted --tags O --comments "$TAG: 업데이트 전 자동 백업" >/dev/null 2>&1 \
+  || warn "스냅샷을 만들지 못했습니다"
+
+# Snapshot names look like 2026-11-11_18-00-01 and sort by date.
+mapfile -t ours < <(timeshift --list --scripted 2>/dev/null \
+  | awk -v t="$TAG" 'index($0, t) { for (i=1;i<=NF;i++) if ($i ~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2}$/) print $i }' \
+  | sort)
+n=${#ours[@]}
+for ((i=0; i < n-KEEP; i++)); do
+  timeshift --delete --scripted --snapshot "${ours[i]}" >/dev/null 2>&1 || true
+done
+echo "SUFUN: 스냅샷을 만들었습니다 (자동 백업은 최근 $KEEP개만 보관)."

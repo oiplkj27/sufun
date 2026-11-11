@@ -1,0 +1,14 @@
+# Rebuild the initramfs when the SUFUN boot screen or the initramfs settings change
+# (the kernel's own hook only reacts to kernel and module changes).
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Path
+Target = usr/share/plymouth/themes/sufun/*
+Target = etc/mkinitcpio.conf.d/10-sufun.conf
+Target = usr/lib/modprobe.d/sufun-i915.conf
+
+[Action]
+Description = SUFUN: 부팅 화면과 설정을 initramfs에 넣는 중...
+When = PostTransaction
+Exec = /usr/bin/mkinitcpio -P

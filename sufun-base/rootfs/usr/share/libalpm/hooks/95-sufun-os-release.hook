@@ -1,0 +1,15 @@
+# Arch's "filesystem" package brings back an "Arch Linux" /usr/lib/os-release, and
+# "lsb-release" an Arch /etc/lsb-release. After every install/upgrade of them (or of
+# sufun-base) this puts the SUFUN files back.
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = filesystem
+Target = lsb-release
+Target = sufun-base
+
+[Action]
+Description = SUFUN: 버전 정보(os-release) 적용 중...
+When = PostTransaction
+Exec = /usr/lib/sufun/apply-os-release

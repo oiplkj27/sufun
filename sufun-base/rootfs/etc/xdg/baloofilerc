@@ -1,0 +1,3 @@
+# Disable KDE's file indexer: it uses a lot of CPU/RAM/disk on a low-spec device.
+[Basic Settings]
+Indexing-Enabled=false

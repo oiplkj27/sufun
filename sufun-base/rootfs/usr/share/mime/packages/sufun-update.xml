@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- File type for SUFUN update files (*.sufun) -->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-sufun-update">
+    <comment>SUFUN update</comment>
+    <comment xml:lang="ko">SUFUN 업데이트</comment>
+    <generic-icon name="system-software-update"/>
+    <glob pattern="*.sufun"/>
+  </mime-type>
+</mime-info>

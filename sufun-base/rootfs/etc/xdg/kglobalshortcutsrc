@@ -1,0 +1,17 @@
+# Windows-style keyboard shortcuts (Win = Meta in KDE).
+# Format: action=current shortcut,default shortcut,description
+
+[services][org.kde.dolphin.desktop]
+_launch=Meta+E
+
+[ksmserver]
+Lock Session=Meta+L\tScreensaver,Meta+L\tScreensaver,Lock Session
+
+[kwin]
+Show Desktop=Meta+D,Meta+D,Peek at Desktop
+# Win+Left/Right = half screen. Then Win+Up/Down = quarter screen.
+Window Quick Tile Left=Meta+Left,Meta+Left,Quick Tile Window to the Left
+Window Quick Tile Right=Meta+Right,Meta+Right,Quick Tile Window to the Right
+Window Quick Tile Top=Meta+Up,Meta+Up,Quick Tile Window to the Top
+Window Quick Tile Bottom=Meta+Down,Meta+Down,Quick Tile Window to the Bottom
+Window Maximize=Meta+PgUp,Meta+PgUp,Maximize Window

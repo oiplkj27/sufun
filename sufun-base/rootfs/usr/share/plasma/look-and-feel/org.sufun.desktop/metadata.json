@@ -1,0 +1,12 @@
+{
+    "KPackageStructure": "Plasma/LookAndFeel",
+    "KPlugin": {
+        "Authors": [{ "Name": "SUFUN" }],
+        "Description": "Windows 11-like layout tuned for the Surface Go 3",
+        "Id": "org.sufun.desktop",
+        "License": "GPL-2.0-or-later",
+        "Name": "SUFUN",
+        "Version": "1.0"
+    },
+    "X-Plasma-APIVersion": "2"
+}

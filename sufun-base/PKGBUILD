@@ -1,0 +1,66 @@
+# sufun-base: everything that makes an Arch install "SUFUN".
+#  - all SUFUN settings and tools (the files in rootfs/, installed to /)
+#  - the package list: packages/desktop.txt + our own packages are dependencies,
+#    so installing sufun-base installs the whole desktop
+#  - os-release (version shown in Settings), Plymouth boot screen, pacman hooks
+# Version = the VERSION file at the top of the repository.
+#
+# Input files, copied next to this PKGBUILD by build-local-repo.sh:
+#   VERSION, HOME_URL, desktop.txt, aur.txt
+pkgname=sufun-base
+pkgver=$(<VERSION)
+pkgrel=1
+pkgdesc="SUFUN for the Microsoft Surface Go 3: settings, tools and package list"
+arch=(any)
+url=$(<HOME_URL)
+license=(GPL-3.0-or-later)
+install=sufun-base.install
+
+_list() { sed -e 's/#.*//' -e 's/[[:space:]]//g' -e '/^$/d' "$1"; }
+# aur.txt lines: "<name>" or "<name> build-only" (build-only = not installed)
+_ours() { awk '{sub(/#.*/,"")} NF && $2 != "build-only" {print $1}' aur.txt; }
+depends=(sufun-keyring $(_list desktop.txt) $(_ours))
+# rsvg-convert renders the boot screen text and logo; the fonts are only needed for that.
+# The Fluent package provides the colors added to kdeglobals.
+makedepends=(librsvg ttf-selawik ttf-dejavu sufun-fluent-theme)
+# /etc files: if you edit one, a SUFUN update writes its new version as .pacnew
+backup=($(cd rootfs && find etc -type f | sort))
+
+package() {
+  cp -a "$startdir/rootfs/." "$pkgdir/"
+  cd "$pkgdir"
+  # Files come from Windows/git without reliable permissions: set them here.
+  find . -type d -exec chmod 755 {} +
+  find . -type f -exec chmod 644 {} +
+  chmod 755 usr/bin/* usr/lib/sufun/*
+
+  # Version information (Settings > About this System, fastfetch, ...)
+  local build_id; build_id=$(date -u --date="@${SOURCE_DATE_EPOCH:-$(date +%s)}" +%Y-%m-%d)
+  sed -e "s|@VERSION@|$pkgver|g" -e "s|@BUILD_ID@|$build_id|g" -e "s|@HOME_URL@|$url|g" \
+      usr/share/sufun/os-release.in > usr/share/sufun/os-release
+  rm usr/share/sufun/os-release.in
+  echo "$pkgver" > usr/share/sufun/VERSION
+  sed -i "s|@HOME_URL@|$url|g" etc/xdg/kcm-about-distrorc
+
+  # KDE reads colors from kdeglobals itself, so copy the Fluent [Colors:*] groups in.
+  awk '/^\[/ { keep = ($0 ~ /^\[(Colors:|ColorEffects:|WM\])/) } keep' \
+    /usr/share/color-schemes/FluentLight.colors >> etc/xdg/kdeglobals
+
+  # Pictures rendered now, so no fonts are needed at boot time.
+  local t=usr/share/plymouth/themes/sufun
+  rsvg-convert -h 140 "$startdir/art/sufun-text.svg" -o "$t/sufun.png"
+  rsvg-convert -w 48  "$startdir/art/spinner.svg"   -o "$t/spinner.png"
+  install -Dm644 "$startdir/art/sufun-logo.svg" usr/share/icons/hicolor/scalable/apps/sufun-logo.svg
+  install -d usr/share/pixmaps
+  rsvg-convert -w 256 "$startdir/art/sufun-logo.svg" -o usr/share/pixmaps/sufun-logo.png
+
+  # Steam must never start at login, even if "Run Steam when my computer starts"
+  # is switched on later: mask the unit Plasma creates for ~/.config/autostart/steam.desktop.
+  install -d etc/systemd/user
+  ln -s /dev/null "etc/systemd/user/app-steam@autostart.service"
+
+  # Start the keyboard switcher (Fcitx5 <-> on-screen keyboard) in every user's
+  # Plasma session (same as "systemctl --global enable").
+  install -d etc/systemd/user/graphical-session.target.wants
+  ln -s /usr/lib/systemd/user/sufun-input-switch.service     etc/systemd/user/graphical-session.target.wants/sufun-input-switch.service
+}

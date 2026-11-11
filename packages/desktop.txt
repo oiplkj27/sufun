@@ -1,0 +1,123 @@
+# Packages from the official Arch repos (core, extra, multilib) + linux-surface.
+# They are dependencies of the "sufun-base" package, so they end up on the
+# live USB and on the installed system.
+# Target: Pentium Gold 6500Y (2 cores), 4 GB RAM, 64 GB eMMC. Keep this list small.
+# Sizes in comments = installed size measured from the Arch package database.
+
+# --- Surface hardware ---
+linux-surface            # patched kernel: touch, pen, buttons, battery, Type Cover, cameras
+linux-firmware-intel     # Wi-Fi (AX201), Bluetooth, GPU GuC/HuC, camera IPU3 firmware. 142 MB instead of 419 MB
+intel-ucode
+sof-firmware             # audio DSP firmware
+alsa-ucm-conf
+iio-sensor-proxy         # accelerometer -> auto screen rotation in tablet mode
+thermald                 # Intel thermal management (fanless device: throttles safely when hot)
+power-profiles-daemon    # battery / balanced / performance profiles
+libwacom                 # pen/touch data; already knows the Go 3 screen (no libwacom-surface needed)
+
+# --- Cameras (front OV5693 + rear OV8865 via IPU3 and libcamera) --- 14 MB
+libcamera
+libcamera-ipa            # image processing (colors, exposure) for libcamera
+pipewire-libcamera       # apps (Firefox, Snapshot) get the cameras through PipeWire
+libcamera-tools          # "cam --list" test tool
+snapshot                 # camera app (photos + video). +96 MB, see README for smaller options
+
+# --- Graphics (Intel UHD 615) ---
+mesa
+vulkan-intel             # also used by Wine (DXVK) and Steam (Proton)
+intel-media-driver       # VA-API hardware video decode = less CPU, more battery
+
+# --- KDE Plasma (minimal, no plasma-meta) ---
+plasma-desktop
+sddm
+sddm-kcm                 # System Settings > Login Screen (auto-login option)
+accountsservice          # System Settings > Users (password, account picture)
+polkit-kde-agent         # password prompts for admin actions (Partition Manager, updates)
+qt6-virtualkeyboard      # on-screen keyboard at the login screen
+plasma-keyboard          # on-screen keyboard for tablet mode (and the lock screen)
+kscreen
+powerdevil
+plasma-nm
+plasma-pa
+bluedevil
+kde-gtk-config
+breeze-gtk
+xdg-desktop-portal-kde
+kinfocenter              # System Settings > About this System (shows the SUFUN version)
+plasma-firewall          # System Settings > Firewall
+plymouth                 # SUFUN boot screen
+
+# --- Apps ---
+konsole
+dolphin
+kio-extras               # phone file transfer (MTP), thumbnails in Dolphin
+featherpad               # "메모장 / Notepad", 3.5 MB
+kcalc                    # calculator
+haruna                   # video/music player (mpv), hardware decoding on
+ark                      # zip / 7z / rar
+7zip                     # Ark: create 7z, password-protected archives
+unrar                    # Ark: extract RAR
+gwenview                 # image viewer
+spectacle                # screenshots (Print Screen / Meta+Shift+S)
+firefox                  # also opens PDFs, so okular (122 MB) is not needed
+htop                     # task manager in the terminal (CPU and RAM per program)
+partitionmanager         # format USB drives (FAT32, exFAT, NTFS)
+timeshift                # system snapshots (backups) before updates
+
+# --- Office (Korean, with HWP/HWPX) ---
+libreoffice-still        # stable branch, see README
+libreoffice-still-ko     # Korean menus and spell-check data
+jre-openjdk-headless     # Java for the H2Orestart (HWP) extension; chosen explicitly
+
+# --- USB drives and phones ---
+udisks2                  # auto-mount in Dolphin and the device notifier
+ntfs-3g                  # NTFS drives from Windows (fallback driver; kernel ntfs3 is used first)
+exfatprogs               # format/check exFAT
+dosfstools               # format/check FAT32 (also on the live USB)
+
+# --- Running Windows programs ---
+wine                     # 64-bit + 32-bit apps (WoW64 build: no lib32 packages needed)
+winetricks
+kdialog                  # winetricks dialogs; also used by SUFUN's update dialog
+
+# --- Steam (needs [multilib]) --- providers chosen explicitly so --noconfirm
+# never picks an NVIDIA/AMD driver
+steam
+lib32-mesa               # 32-bit OpenGL for Intel
+lib32-vulkan-intel       # 32-bit Vulkan for Intel (Proton/DXVK)
+xdotool                  # sufun Steam launcher: notices when the Steam window is closed
+xorg-xprop               # (same)
+
+# --- Fonts & Korean input ---
+ttf-dejavu               # fallback Latin font (10 MB instead of noto-fonts' 107 MB)
+ttf-liberation           # same width as Arial/Times/Courier: Wine & websites lay out correctly
+noto-fonts-cjk           # Noto Sans CJK KR (Korean). 299 MB, see README for a 31 MB alternative
+noto-fonts-emoji
+fcitx5
+fcitx5-hangul
+fcitx5-qt
+fcitx5-gtk
+fcitx5-configtool
+
+# --- Audio ---
+pipewire
+pipewire-alsa
+pipewire-pulse
+wireplumber
+pipewire-jack            # JACK apps use PipeWire (chosen explicitly instead of jack2)
+
+# --- Network & security ---
+networkmanager
+bluez
+bluez-utils
+ufw                      # firewall: block incoming, allow outgoing
+
+# --- System / low-RAM tuning ---
+zram-generator           # compressed swap in RAM, never on the eMMC
+earlyoom                 # closes the app eating memory before the desktop freezes
+systembus-notify         # shows a notification when earlyoom closes something
+ananicy-cpp              # gives desktop/foreground-type apps CPU priority (rules: our package)
+tesseract-data-eng       # text recognition data needed by kio-extras' search tool; English only (else pacman picks Afrikaans)
+pacman-contrib           # paccache: cleans old packages automatically
+sudo
+nano

@@ -1,0 +1,30 @@
+{
+  "_comment": [
+    "SUFUN Firefox defaults. JSON has no comments, so they are here; Firefox ignores this key.",
+    "uBlock Origin (force-installed): blocks ads and trackers = less RAM and CPU per tab.",
+    "max_total_viewers=0: do not keep whole old pages in RAM for the Back button (Back reloads instead).",
+    "unloadOnLowMemory / processCount=4: fewer content processes, unload background tabs when RAM is low.",
+    "Site isolation (Fission) stays ON: it protects you from malicious sites.",
+    "VA-API on, AV1 off: the UHD 615 decodes VP9/H.264 in hardware but not AV1.",
+    "allow-pipewire: video calls can use the Surface cameras through PipeWire/libcamera."
+  ],
+  "policies": {
+    "DisableTelemetry": true,
+    "DisableFirefoxStudies": true,
+    "ExtensionSettings": {
+      "uBlock0@raymondhill.net": {
+        "installation_mode": "force_installed",
+        "install_url": "https://addons.mozilla.org/firefox/downloads/latest/ublock-origin/latest.xpi"
+      }
+    },
+    "Preferences": {
+      "media.ffmpeg.vaapi.enabled": { "Value": true, "Status": "default" },
+      "media.hardware-video-decoding.force-enabled": { "Value": true, "Status": "default" },
+      "media.av1.enabled": { "Value": false, "Status": "default" },
+      "media.webrtc.camera.allow-pipewire": { "Value": true, "Status": "default" },
+      "browser.tabs.unloadOnLowMemory": { "Value": true, "Status": "default" },
+      "browser.sessionhistory.max_total_viewers": { "Value": 0, "Status": "default" },
+      "dom.ipc.processCount": { "Value": 4, "Status": "default" }
+    }
+  }
+}

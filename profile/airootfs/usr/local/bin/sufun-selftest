@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Automatic boot/install test for the CI virtual machine. Does nothing unless the
+# kernel command line contains "sufun.test=...". Results go to the serial port
+# (/dev/ttyS0), where the test script on GitHub reads them:
+#   sufun.test=live       live USB: wait for the desktop, report LIVE-DESKTOP-OK
+#   sufun.test=install    live USB: run the installer automatically, then power off
+#   sufun.test=installed  installed system: check it, report results, power off
+MODE=$(sed -n 's/.*sufun\.test=\([a-z]*\).*/\1/p' /proc/cmdline)
+[[ -n $MODE ]] || exit 0
+say() { echo "SUFUN-TEST: $*" > /dev/ttyS0; echo "SUFUN-TEST: $*"; }
+check() {  # check <name> <command...>
+  local name=$1; shift
+  if "$@" >/dev/null 2>&1; then say "PASS $name"; else say "FAIL $name"; fi
+}
+wait_for() {  # wait_for <seconds> <command...>
+  local t=$1; shift
+  for ((i = 0; i < t; i += 5)); do "$@" >/dev/null 2>&1 && return 0; sleep 5; done
+  return 1
+}
+greeter_up()  { pgrep -f sddm-greeter >/dev/null; }
+desktop_up()  { pgrep -u sufun -x plasmashell >/dev/null && pgrep -x kwin_wayland >/dev/null; }
+
+case "$MODE" in
+  live)
+    say "BOOTED live"
+    if wait_for 1200 desktop_up; then sleep 20; say "LIVE-DESKTOP-OK"; else say "LIVE-DESKTOP-TIMEOUT"; fi
+    ;;
+  install)
+    say "BOOTED install"
+    wait_for 600 nm-online -q -t 5
+    if SUFUN_AUTO=1 SUFUN_DISK=/dev/vda SUFUN_HOST=sufun SUFUN_USER=tester \
+       SUFUN_PASS=sufun-test SUFUN_TZ=Asia/Seoul SUFUN_LANG=2 \
+       /usr/local/bin/sufun-install > /dev/ttyS0 2>&1; then
+      say "INSTALL-DONE"
+    else
+      say "INSTALL-FAILED"
+    fi
+    sleep 5; systemctl poweroff
+    ;;
+  installed)
+    say "BOOTED installed"
+    say "VERSION $(pacman -Q sufun-base | awk '{print $2}' | sed 's/-[0-9]*$//')"
+    check boot-entry-sufun   grep -q '^title *SUFUN$' /boot/loader/entries/sufun.conf
+    check splash-option      grep -qw splash /proc/cmdline
+    check plymouth-theme     bash -c '[[ $(plymouth-set-default-theme) == sufun ]]'
+    check plymouth-initramfs bash -c 'lsinitcpio /boot/initramfs-linux-surface.img | grep -q "plymouth/themes/sufun/sufun.png"'
+    check login-screen       wait_for 600 greeter_up
+    check zram               bash -c 'swapon --show=NAME --noheadings | grep -q zram'
+    check earlyoom           systemctl is-active earlyoom
+    check firewall           systemctl is-active ufw
+    check firewall-rules     bash -c 'ufw status | grep -q "Status: active"'
+    check fstab-no-subvolid  bash -c '! grep -q subvolid /etc/fstab'
+    check timeshift-config   test -f /etc/timeshift/timeshift.json
+    check os-release         grep -q '^ID=sufun' /etc/os-release
+    sleep 20      # time for a screenshot of the login screen
+    say "INSTALLED-DONE"
+    systemctl poweroff
+    ;;
+esac

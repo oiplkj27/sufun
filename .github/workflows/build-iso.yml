@@ -1,0 +1,21 @@
+# Test build: every push to main (and "Run workflow" by hand).
+# Builds an UNSIGNED test ISO and boot-tests it. No .sufun file, no signing key.
+# Note: pushing already starts this; don't also start it with "gh workflow run".
+name: Build ISO (test)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    uses: ./.github/workflows/build-test.yml
