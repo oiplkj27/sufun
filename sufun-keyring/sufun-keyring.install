@@ -1,0 +1,8 @@
+# Add the SUFUN key to pacman's keyring (or update it: new keys, revocations).
+_populate() {
+  [ -s /usr/share/pacman/keyrings/sufun.gpg ] || { echo ">>> sufun-keyring: no SUFUN key in this build"; return 0; }
+  [ -d /etc/pacman.d/gnupg ] || return 0      # keyring not set up yet (pacman-init will populate it)
+  pacman-key --populate sufun
+}
+post_install() { _populate; }
+post_upgrade() { _populate; }

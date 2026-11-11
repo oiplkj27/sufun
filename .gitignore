@@ -14,7 +14,10 @@ keys/*
 *.gpg
 *.kbx
 *.key
-SUFUN-KEY*/
+# (not "SUFUN-KEY*/": on Windows that also matched the sufun-keyring/ folder)
+SUFUN-KEY/
+SUFUN-KEY-*/
+SUFUN-KEY_*/
 openpgp-revocs.d/
 private-keys-v1.d/
 

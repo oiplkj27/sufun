@@ -1,0 +1,45 @@
+# SUFUN signing keys, packaged like Arch's own "archlinux-keyring".
+# Shipping the public key in its own package means a later update can add a new
+# key or revoke an old one, just by installing a newer sufun-keyring.
+#
+# Input files (copied next to this PKGBUILD by build-local-repo.sh):
+#   VERSION        the SUFUN version (also the package version)
+#   sufun.asc      public key(s), exported by scripts/sufun-key.sh. Public = safe to commit.
+#   sufun-revoked  fingerprints of primary keys that must no longer be trusted (may be empty)
+pkgname=sufun-keyring
+pkgver=$(<VERSION)
+pkgrel=1
+pkgdesc="SUFUN release signing keys (for pacman and sufun-update)"
+arch=(any)
+license=(CC0-1.0)
+depends=(pacman gnupg)
+install=sufun-keyring.install
+
+package() {
+  cd "$startdir"
+  if [[ ! -s sufun.asc ]]; then
+    # Test builds before the key exists: an empty keyring package.
+    # sufun-update then refuses every .sufun file, which is the safe behaviour.
+    echo "WARNING: keys/sufun.asc not found - building sufun-keyring WITHOUT a key" >&2
+    install -d "$pkgdir/usr/share/sufun/keys"
+    return 0
+  fi
+  local home; home=$(mktemp -d)
+  # Trusted = every primary key in sufun.asc that is not in sufun-revoked (ownertrust 4 = full).
+  gpg --homedir "$home" --batch --with-colons --show-keys sufun.asc \
+    | awk -F: '$1=="pub"{want=1} $1=="fpr" && want {print $10; want=0}' > primaries
+  grep -vxF -f <(grep -v '^#' sufun-revoked 2>/dev/null || true) primaries \
+    | sed 's/$/:4:/' > sufun-trusted || true
+  grep -v '^#' sufun-revoked 2>/dev/null | sed '/^$/d' > sufun-revoked.clean || true
+  rm -rf "$home"
+
+  # For pacman (pacman-key --populate sufun)
+  install -Dm644 sufun.asc            "$pkgdir/usr/share/pacman/keyrings/sufun.gpg"
+  install -Dm644 sufun-trusted        "$pkgdir/usr/share/pacman/keyrings/sufun-trusted"
+  install -Dm644 sufun-revoked.clean  "$pkgdir/usr/share/pacman/keyrings/sufun-revoked"
+  # For sufun-update (gpgv needs a binary keyring). ONLY our keys are in it, so an
+  # Arch Linux packager key can never sign a .sufun file.
+  install -d "$pkgdir/usr/share/sufun/keys"
+  gpg --dearmor < sufun.asc > "$pkgdir/usr/share/sufun/keys/sufun-release.gpg"
+  install -Dm644 sufun-trusted "$pkgdir/usr/share/sufun/keys/trusted"
+}
