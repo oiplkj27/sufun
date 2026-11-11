@@ -1,0 +1,5 @@
+# KRunner = the search window (taskbar search box, Win+R, Alt+Space).
+[General]
+# Open in the middle of the screen (like Windows search) instead of sliding
+# down from the top edge.
+FreeFloating=true

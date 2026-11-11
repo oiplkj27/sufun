@@ -54,6 +54,32 @@ package() {
   install -d usr/share/pixmaps
   rsvg-convert -w 256 "$startdir/art/sufun-logo.svg" -o usr/share/pixmaps/sufun-logo.png
 
+  # Icon theme "SUFUN" = Fluent + the SUFUN logo as the start button.
+  # Fluent's start-here icons are the Windows logo (removed in sufun-fluent-icons).
+  # Our own small theme sits on top of Fluent ("Inherits"), so Fluent updates can
+  # never bring the Windows logo back: every start-here* name comes from here.
+  local s n names=(start-here start-here-kde start-here-kde-plasma
+    start-here-symbolic start-here-kde-symbolic start-here-kde-plasma-symbolic)
+  local sizes=(16 22 24 32 48 64 96 128 256) dirs=()
+  for s in "${sizes[@]}"; do
+    install -d "usr/share/icons/SUFUN/${s}x${s}/places"
+    rsvg-convert -w "$s" -h "$s" "$startdir/art/sufun-logo.svg" -o "usr/share/icons/SUFUN/${s}x${s}/places/start-here.png"
+    for n in "${names[@]:1}"; do
+      ln -s start-here.png "usr/share/icons/SUFUN/${s}x${s}/places/$n.png"
+    done
+    dirs+=("${s}x${s}/places")
+  done
+  {
+    echo '[Icon Theme]'
+    echo 'Name=SUFUN'
+    echo 'Comment=Fluent icons with the SUFUN start button'
+    echo 'Inherits=Fluent,breeze,hicolor'
+    echo "Directories=$(IFS=,; echo "${dirs[*]}")"
+    for s in "${sizes[@]}"; do
+      printf '\n[%sx%s/places]\nSize=%s\nContext=Places\nType=Threshold\n' "$s" "$s" "$s"
+    done
+  } > usr/share/icons/SUFUN/index.theme
+
   # Steam must never start at login, even if "Run Steam when my computer starts"
   # is switched on later: mask the unit Plasma creates for ~/.config/autostart/steam.desktop.
   install -d etc/systemd/user

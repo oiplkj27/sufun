@@ -11,6 +11,11 @@ contrastEnabled=false
 translucencyEnabled=false
 wobblywindowsEnabled=false
 
+[TabBox]
+# Alt+Tab with live window thumbnails, like Windows. "Thumbnail Grid" is the
+# only switcher with previews that comes with KWin itself (no extra package).
+LayoutName=thumbnail_grid
+
 [ModifierOnlyShortcuts]
 # Pressing Win alone opens the start menu
 Meta=org.kde.plasmashell,/PlasmaShell,org.kde.PlasmaShell,activateLauncherMenu

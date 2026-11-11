@@ -206,7 +206,10 @@ printf '%s:%s\n' "$USER_NAME" "$PASS1" | arch-chroot /mnt chpasswd
 ROOT_UUID=$(blkid -s PARTUUID -o value "${P}2")
 # quiet + splash = SUFUN boot screen (Plymouth) instead of text
 OPTS="root=PARTUUID=$ROOT_UUID rootflags=subvol=@ rw quiet splash loglevel=3 nowatchdog"
-(( AUTO )) && OPTS="$OPTS console=ttyS0,115200 console=tty0 sufun.test=installed"
+# Test mode only (never on a real install): serial console for the test log, and
+# plymouth.ignore-serial-consoles so Plymouth still draws the SUFUN splash on the
+# screen (with a serial console it would fall back to text) for the CI screenshots.
+(( AUTO )) && OPTS="$OPTS console=ttyS0,115200 console=tty0 plymouth.ignore-serial-consoles sufun.test=installed"
 cat > /mnt/boot/loader/loader.conf <<EOF
 default sufun.conf
 timeout 2

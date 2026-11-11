@@ -1,0 +1,6 @@
+# Start menu (Kickoff) "pinned" apps for every new user, in this order.
+# Read once by Plasma when a user's start menu is created (KAStatsFavoritesModel).
+# IgnoreDefaults: don't add KDE's own default list (it has apps we don't ship).
+[General]
+Prepend=firefox.desktop;org.kde.dolphin.desktop;systemsettings.desktop;libreoffice-writer.desktop;libreoffice-calc.desktop;libreoffice-impress.desktop;featherpad.desktop;org.kde.kcalc.desktop;org.kde.gwenview.desktop;org.kde.haruna.desktop;org.gnome.Snapshot.desktop;steam.desktop;org.kde.spectacle.desktop;org.kde.konsole.desktop;org.kde.plasma-systemmonitor.desktop;
+IgnoreDefaults=true

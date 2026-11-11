@@ -10,7 +10,8 @@ smallestReadableFont=Selawik,8,-1,5,400,0,0,0,0,0,0,0,0,0,0,1
 fixed=DejaVu Sans Mono,10,-1,5,400,0,0,0,0,0,0,0,0,0,0,1
 
 [Icons]
-Theme=Fluent
+# SUFUN = Fluent icons + the SUFUN logo as the start button (no Windows logo)
+Theme=SUFUN
 
 [KDE]
 # Our Windows 11-style layout (bottom taskbar, centered icons)

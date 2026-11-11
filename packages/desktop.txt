@@ -61,6 +61,7 @@ gwenview                 # image viewer
 spectacle                # screenshots (Print Screen / Meta+Shift+S)
 firefox                  # also opens PDFs, so okular (122 MB) is not needed
 htop                     # task manager in the terminal (CPU and RAM per program)
+plasma-systemmonitor     # "작업 관리자" / Task Manager (Ctrl+Shift+Esc). +3 MB disk, RAM only while open
 partitionmanager         # format USB drives (FAT32, exFAT, NTFS)
 timeshift                # system snapshots (backups) before updates
 

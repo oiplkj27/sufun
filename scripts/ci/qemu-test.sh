@@ -2,13 +2,16 @@
 # Automatic boot + install test (idea from KDE Linux: every image must boot to the desktop).
 #   bash scripts/ci/qemu-test.sh <iso> <expected-version> <output-dir>
 #
-#   Test 1: live USB boots to the Plasma desktop
+#   Test 1: live USB boots to the Plasma desktop, checks the Windows 11-style layout,
+#           prints RAM numbers
 #   Test 2: the installer installs SUFUN to an empty 64 GB virtual disk (test mode)
-#   Test 3: the installed system boots, shows the login screen, and checks itself
+#   Test 3: the installed system boots, shows the login screen, checks itself, then
+#           logs in (test disk only) and checks the Korean desktop
 #           (SUFUN boot entry + Plymouth, version, zram, earlyoom, firewall, fstab)
 # Success is read from the serial console ("SUFUN-TEST: ..." lines written by
 # sufun-selftest), not from fixed waiting times. Screenshots are saved every
-# minute (QEMU monitor "screendump"), plus the serial logs: upload <output-dir>.
+# 10 seconds for the first 3 minutes, then every minute (QEMU monitor
+# "screendump"), plus the serial logs: upload <output-dir>.
 #
 # Needs: qemu-system-x86_64, qemu-img, OVMF (UEFI firmware), xorriso, python3.
 # Uses KVM when /dev/kvm is usable, otherwise slow software emulation with longer timeouts.
@@ -16,7 +19,7 @@ set -uo pipefail
 
 ISO="$(realpath "${1:?iso}")"; WANT="${2:?version}"; OUT="${3:?output dir}"
 mkdir -p "$OUT"; OUT="$(realpath "$OUT")"
-cd "$OUT"
+cd "$OUT" || exit 1
 
 if [[ -r /dev/kvm && -w /dev/kvm ]]; then
   ACCEL=(-accel kvm -cpu host); F=1; echo "Using KVM"
@@ -59,7 +62,7 @@ PY
 # run_vm <name> <timeout-seconds> <success-regex> <fail-regex> <qemu args...>
 run_vm() {
   local name=$1 timeout=$(( $2 * F )) ok=$3 bad=$4; shift 4
-  local log="$name-serial.log" sock="$OUT/$name.sock" n=0 start=$SECONDS result=TIMEOUT
+  local log="$name-serial.log" sock="$OUT/$name.sock" next_shot=10 el start=$SECONDS result=TIMEOUT
   : > "$log"
   qemu-system-x86_64 "${ACCEL[@]}" -machine q35 -smp 2 -m 4096 \
     -drive if=pflash,format=raw,readonly=on,file="$CODE" \
@@ -71,9 +74,14 @@ run_vm() {
   local pid=$!
   echo "== $name started (timeout ${timeout}s)"
   while kill -0 $pid 2>/dev/null; do
-    sleep 10
-    if (( (SECONDS - start) / 60 >= n )); then
-      monitor "$sock" "screendump $name-$(printf %03d $n).png -f png"; n=$((n + 1))
+    sleep 2
+    # Screenshots: every 10 s for the first 3 minutes (boot splash, login screen,
+    # desktop appearing), then every minute. File name = seconds since start,
+    # e.g. 3-installed-t0040.png = 40 s after the virtual PC was switched on.
+    el=$((SECONDS - start))
+    if (( el >= next_shot )); then
+      monitor "$sock" "screendump $name-t$(printf %04d "$el").png -f png"
+      if (( el < 180 )); then next_shot=$((el + 10)); else next_shot=$((el + 60)); fi
     fi
     if grep -qE "$ok" "$log"; then result=OK; break; fi
     if grep -qE "$bad" "$log"; then result=FAILED; break; fi

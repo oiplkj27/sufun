@@ -1,0 +1,8 @@
+# Dolphin (Files) like Windows File Explorer, for every new user.
+# The left "Places" pane (Home, Desktop, Documents, Downloads, Pictures, ... and
+# drives under "Devices") is shown by default. Folder names follow the language
+# (Korean: 바탕화면, 문서, 다운로드, 사진 ...) thanks to xdg-user-dirs.
+[General]
+# Address bar you can type into (like Explorer), instead of clickable "breadcrumbs" only
+EditableUrl=true
+ShowFullPath=true

@@ -2,9 +2,12 @@
 # Automatic boot/install test for the CI virtual machine. Does nothing unless the
 # kernel command line contains "sufun.test=...". Results go to the serial port
 # (/dev/ttyS0), where the test script on GitHub reads them:
-#   sufun.test=live       live USB: wait for the desktop, report LIVE-DESKTOP-OK
+#   sufun.test=live       live USB: wait for the desktop, check the Windows 11-style
+#                         layout, measure RAM, report LIVE-DESKTOP-OK
 #   sufun.test=install    live USB: run the installer automatically, then power off
-#   sufun.test=installed  installed system: check it, report results, power off
+#   sufun.test=installed  installed system: check it, show the login screen, then
+#                         log in automatically (test only) to check the Korean
+#                         desktop, report results, power off
 MODE=$(sed -n 's/.*sufun\.test=\([a-z]*\).*/\1/p' /proc/cmdline)
 [[ -n $MODE ]] || exit 0
 say() { echo "SUFUN-TEST: $*" > /dev/ttyS0; echo "SUFUN-TEST: $*"; }
@@ -18,12 +21,77 @@ wait_for() {  # wait_for <seconds> <command...>
   return 1
 }
 greeter_up()  { pgrep -f sddm-greeter >/dev/null; }
-desktop_up()  { pgrep -u sufun -x plasmashell >/dev/null && pgrep -x kwin_wayland >/dev/null; }
+desktop_up()  { pgrep -u "$1" -x plasmashell >/dev/null && pgrep -x kwin_wayland >/dev/null; }
+first_login_done() { test -f "$(getent passwd "$1" | cut -d: -f6)/.config/sufun/first-login-done"; }
+
+# --- Windows 11-style desktop checks (for user $1) ---
+check_desktop() {
+  local u=$1 home applets desk
+  home=$(getent passwd "$u" | cut -d: -f6)
+  applets="$home/.config/plasma-org.kde.plasma.desktop-appletsrc"
+  desk=$(runuser -u "$u" -- xdg-user-dir DESKTOP 2>/dev/null)
+  check taskbar-start-menu   grep -qx 'plugin=org.kde.plasma.kickoff' "$applets"
+  check taskbar-search-box   grep -qx 'plugin=org.sufun.search' "$applets"
+  check taskbar-task-view    grep -qx 'plugin=org.sufun.taskview' "$applets"
+  check taskbar-clock        grep -qx 'plugin=org.sufun.clock' "$applets"
+  check tray-always-visible  grep -q '^shownItems=Fcitx,' "$applets"
+  check shortcut-win-a       grep -qx 'global=Meta+A' "$applets"
+  check shortcut-win-n       grep -qx 'global=Meta+N' "$applets"
+  check desktop-icons        bash -c "cd '$desk' && test -f trash.desktop -a -x firefox.desktop -a -x steam.desktop -a -x libreoffice-writer.desktop -a -x featherpad.desktop"
+  check desktop-columns      grep -qx 'arrangement=1' "$applets"
+  check plasma-running       pgrep -u "$u" -x plasmashell
+  say "INFO desktop folder: $desk"
+}
+
+# --- Things in the image: SUFUN start logo, no Microsoft logos ---
+check_image() {
+  check start-logo-sufun     test -f /usr/share/icons/SUFUN/48x48/places/start-here-kde.png
+  check no-windows-logo      bash -c '! find /usr/share/icons/Fluent* /usr/share/plasma/desktoptheme \( -iname "start-here*" -o -iname "start.svg*" \) | grep -q .'
+  check no-microsoft-logos   bash -c '! find /usr/share/icons/Fluent* \( -iname "*microsoft-edge*" -o -iname "ms-word*" -o -iname "*teams*" \) | grep -q .'
+}
+
+# --- RAM numbers (informational, never fail the test) ---
+pss_mb() {  # pss_mb <pid...>: memory really used by these processes ("PSS"), in MB
+  local p v t=0
+  for p in "$@"; do
+    v=$(awk '/^Pss:/ {print $2}' "/proc/$p/smaps_rollup" 2>/dev/null)
+    t=$((t + ${v:-0}))
+  done
+  echo $((t / 1024))
+}
+as_user() {  # as_user <user> <command...>: run a program inside that user's desktop
+  local u=$1 uid; shift; uid=$(id -u "$u")
+  runuser -u "$u" -- env XDG_RUNTIME_DIR="/run/user/$uid" WAYLAND_DISPLAY=wayland-0 \
+    DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" QT_QPA_PLATFORM=wayland "$@"
+}
+ram_report() {  # ram_report <user>
+  local u=$1
+  say "INFO ram used-total $(free -m | awk '/^Mem:/ {print $3}') MB of $(free -m | awk '/^Mem:/ {print $2}') MB"
+  say "INFO ram plasmashell $(pss_mb $(pgrep -u "$u" -x plasmashell)) MB, kwin_wayland $(pss_mb $(pgrep -x kwin_wayland)) MB"
+  # Task manager candidates (Ctrl+Shift+Esc), each measured 25 s after opening
+  as_user "$u" plasma-systemmonitor >/dev/null 2>&1 &
+  sleep 25
+  say "INFO ram task-manager plasma-systemmonitor $(pss_mb $(pgrep -u "$u" -x plasma-systemmonitor)) MB + ksystemstats $(pss_mb $(pgrep -u "$u" -x ksystemstats)) MB"
+  pkill -u "$u" -x plasma-systemmonitor; sleep 3
+  as_user "$u" konsole -e htop >/dev/null 2>&1 &
+  sleep 25
+  say "INFO ram task-manager konsole+htop $(pss_mb $(pgrep -u "$u" -x konsole) $(pgrep -u "$u" -x htop)) MB"
+  pkill -u "$u" -x konsole; sleep 3
+}
 
 case "$MODE" in
   live)
     say "BOOTED live"
-    if wait_for 1200 desktop_up; then sleep 20; say "LIVE-DESKTOP-OK"; else say "LIVE-DESKTOP-TIMEOUT"; fi
+    if wait_for 1200 desktop_up sufun; then
+      wait_for 240 first_login_done sufun
+      sleep 30      # screenshots of the finished desktop
+      check_image
+      check_desktop sufun
+      ram_report sufun
+      say "LIVE-DESKTOP-OK"
+    else
+      say "LIVE-DESKTOP-TIMEOUT"
+    fi
     ;;
   install)
     say "BOOTED install"
@@ -53,6 +121,20 @@ case "$MODE" in
     check timeshift-config   test -f /etc/timeshift/timeshift.json
     check os-release         grep -q '^ID=sufun' /etc/os-release
     sleep 20      # time for a screenshot of the login screen
+    # Test only: log the test user in automatically to check the Korean desktop.
+    # (This file exists only on the CI test disk; a real install has no autologin.)
+    mkdir -p /etc/sddm.conf.d
+    printf '[Autologin]\nUser=tester\nSession=plasma\n' > /etc/sddm.conf.d/99-sufun-test-autologin.conf
+    systemctl restart sddm
+    if wait_for 600 desktop_up tester; then
+      wait_for 240 first_login_done tester
+      sleep 30    # screenshots of the Korean desktop (clock: 오전/오후)
+      check korean-language   grep -q '^LANG=ko_KR' /etc/locale.conf
+      check korean-folders    test -d /home/tester/바탕화면 -a -d /home/tester/문서 -a -d /home/tester/다운로드
+      check_desktop tester
+    else
+      say "FAIL desktop-login"
+    fi
     say "INSTALLED-DONE"
     systemctl poweroff
     ;;

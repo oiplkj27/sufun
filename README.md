@@ -40,6 +40,61 @@ scripts/                    sufun-key.sh, make-sufun-update.sh, check-aur-update
 
 ---
 
+## Windows 11-style desktop
+
+Default for every new user, on the live USB and on the installed system (all in `sufun-base`). The wallpaper stays Plasma's default. Blur, transparency and rounded-corner window effects stay **off** (speed). No Microsoft logo, font or icon is shipped: the start button is the SUFUN logo, the font is Selawik, the icons are Fluent.
+
+**Taskbar** (left to right): `[space]` start button · **검색** box · Task View · Files, Firefox, Konsole, Settings `[space]` tray (`^`, 한/영, network, volume, battery) · clock. Running apps get the small line under their icon (Plasma's normal task indicator).
+
+| Part | How it is done | Why this way |
+|---|---|---|
+| Start button | Icon theme **"SUFUN"** (in `sufun-base`) = Fluent + the SUFUN logo for every `start-here*` name | Fluent's start icons are the Windows logo. Our theme sits *on top of* Fluent, so Fluent updates can't bring the Windows logo back. The Windows logo is also removed from `sufun-fluent-icons` (with Edge/Office/Teams/Skype/OneDrive logos, 59 files) and from the Plasma style (`icons/start.svgz`). |
+| 검색 box | Small SUFUN widget `org.sufun.search` → opens **KRunner** (apps, recent files, folders, settings, calculator) in the middle of the screen | Plasma has no search *field* for the panel. KRunner is Plasma's own search. File-content search is off (Baloo indexing uses too much CPU/RAM). |
+| Task View | Small SUFUN widget `org.sufun.taskview` → KWin **Overview** | Plasma 6.8 has no Overview button widget. |
+| Clock | Small SUFUN widget `org.sufun.clock`: two lines, right-aligned, same size. Korean `오전 2:33` / English `2:33 AM`, below it `2026-11-12`. Click = Plasma's calendar | Plasma's Digital Clock always puts 오전/오후 *after* the time, draws the date smaller and centers both lines. |
+| Start menu | **Kickoff** (Plasma's own): pinned apps as a grid, user name + picture, power buttons. Pinned apps: `/etc/xdg/kicker-extra-favoritesrc`. Recent files: *Places → History* | See "Start menu: Kickoff, not Menu 11" below. |
+| Desktop icons | 휴지통, Firefox, Steam, LibreOffice Writer, 메모장, in columns from the top-left, 48 px, double-click to open | Made by `/usr/lib/sufun/first-login` in the user's desktop folder (`~/바탕화면` in Korean). |
+| Tray | Always visible: 한/영 (Fcitx5 shows text, not an icon), network, volume, battery. Behind `^`: Bluetooth, notifications, clipboard, brightness | Set by `first-login`: Plasma's layout script can't reach widgets *inside* the tray, so at the first login Plasma's shell is stopped for ~2 s, the settings are written, and it starts again. |
+| Alt+Tab | KWin **Thumbnail Grid**: live window previews | The only switcher with previews that comes with KWin itself (the others need `kdeplasma-addons`, +19 MB). |
+| Files (Dolphin) | Places pane on the left (Home, Desktop, Documents, Downloads, Pictures, ..., drives under *Devices*), address bar you can type into | Folder names follow the language (`xdg-user-dirs`): 바탕화면, 문서, 다운로드, 사진, ... |
+
+**Windows shortcuts** (`/etc/xdg/kglobalshortcutsrc`):
+
+| Keys | Opens |
+|---|---|
+| Win | start menu |
+| Win+R | run box (KRunner) — taken from Spectacle's "record region" (now Win+Shift+R) |
+| Win+I | Settings |
+| Win+E | Files |
+| Win+Tab | Task View (Overview; Win+W still works). Removed from "switch windows" (Alt+Tab) and "switch activities" |
+| Win+V | clipboard history (Plasma default) |
+| Win+Shift+S | screenshot of an area (Spectacle, right away) |
+| Win+A | tray = quick settings (Wi-Fi, volume, battery, brightness, Bluetooth) |
+| Win+N | notifications |
+| Win+D / Win+L / Win+arrows | desktop / lock / snap windows (as before) |
+| Ctrl+Shift+Esc | Task Manager (System Monitor; Win+Esc also works) |
+
+**Task Manager: plasma-systemmonitor (chosen) vs. htop.** plasma-systemmonitor costs **+3.0 MB** on disk (everything it needs is already installed with Plasma) and uses RAM only while it is open; htop (already installed, 0.4 MB) inside Konsole uses less RAM but is a terminal program that is hard to use with touch. plasma-systemmonitor works like the Windows Task Manager (click a program, *End Process*). htop stays installed. The CI live test measures both every build: see the `INFO ram task-manager` lines in `1-live-serial.log`.
+
+**Start menu: Kickoff, not Menu 11.** The closest community menu, "Menu 11 Next" (GPL licence tag but no licence file; one-person fork), is ~6,000 lines of QML that uses Plasma's *private* start-menu API, was last released before Plasma 6.8, sends search text to DuckDuckGo and copies with X11-only tools. Arch updates Plasma all the time, so a broken start menu after an update would be the worst possible failure. Kickoff is updated together with Plasma. Differences you will see: user name/picture is at the **top** (Windows: bottom), and recent files are under *Places → History* instead of on the first page.
+
+**Cost of everything added:**
+
+| | Disk | RAM |
+|---|---|---|
+| plasma-systemmonitor | +3.0 MB | only while open (measured in CI, see above) |
+| 3 SUFUN widgets (search, Task View, clock) | ~15 KB | a few MB inside the Plasma shell (small QML; the calendar loads only when you open it) |
+| SUFUN icon theme (PNG start logo, 9 sizes) | ~0.2 MB | – |
+| Removed Microsoft/Windows logos | −59 icon files | – |
+| Desktop icons (5 shortcuts) | a few KB | the desktop was already a Folder View; a few MB for 5 icons |
+| Alt+Tab thumbnails, Overview, KRunner | 0 (part of KWin/Plasma) | only while open |
+| Settings files | a few KB | – |
+| **Total** | **≈ +3 MB** | **a few MB always; more only while an app/popup is open** |
+
+The CI live test also prints the Plasma shell's and KWin's memory after login (`INFO ram plasmashell ...`), so changes can be compared build by build.
+
+---
+
 ## Changes in this update and why
 
 ### Build fixes (items 1, 2, 4, 5, 26)
@@ -276,7 +331,7 @@ With btrfs + zstd the real space on the eMMC is about 30–40% lower. Plus up to
 - **Storage:** btrfs `noatime,compress=zstd:1` (≈ 30–40% smaller, usually no slowdown on the slow eMMC; `df` numbers are less exact, use `btrfs filesystem usage /`), logs capped at 100 MB, no crash dumps, weekly package-cache cleanup keeping 1 version (`-rk1`; change to `-rk2` to keep one older version).
 - **Smaller extras chosen before:** `linux-firmware-intel` instead of all firmware (−277 MB), Firefox opens PDFs instead of Okular (−122 MB), DejaVu + Liberation instead of all Noto fonts (−93 MB), FeatherPad instead of KWrite (−47 MB), no man pages. Possible further saving: `adobe-source-han-sans-kr-fonts` (31 MB, Korean only) instead of `noto-fonts-cjk` (299 MB).
 - **Graphics/power:** HuC firmware with `i915.enable_guc=2` (3 would turn on GuC submission, which this GPU generation doesn't support), Firefox VA-API on and AV1 off (no AV1 hardware decoding on the UHD 615), Bluetooth starts on demand with the radio off, no printing (CUPS) installed, ananicy-cpp priorities by program type (it can't know which window is in front).
-- **Start menu:** KDE's Kickoff; for a closer Windows 11 look, right-click the start button → *Show Alternatives* → "Menu 11" (community widget, not included). Kvantum and Aurorae are not used (slower).
+- **Start menu:** KDE's Kickoff (see "Windows 11-style desktop" above for why not Menu 11). Kvantum and Aurorae are not used (slower).
 
 ---
 
@@ -393,11 +448,13 @@ SUFUN은 디스크를 암호화하지 않습니다. 대신 **Surface UEFI 암호
 ## Automatic boot and install test (item 25)
 
 Every build (test builds and releases) is boot-tested in a virtual machine (QEMU + UEFI firmware), like KDE Linux does:
-1. **Live USB** boots to the Plasma desktop.
+1. **Live USB** boots to the Plasma desktop and checks the Windows 11-style layout (start menu, search box, Task View, clock, tray, Win+A/Win+N, desktop icons, SUFUN start logo, no Microsoft logos) and prints RAM numbers (`INFO ram ...`).
 2. **Installer** runs in a test-only automatic mode and installs to an empty 64 GB virtual disk. This mode runs only when **all three** are true: `SUFUN_AUTO=1`, the kernel option `sufun.test=install`, and the computer is a QEMU VM. So it can never start on your Surface.
-3. **Installed system** boots from the virtual disk and checks itself: SUFUN boot entry, `splash` and the Plymouth theme in the initramfs, login screen shown, `sufun-base` version = `VERSION`, zram, earlyoom and firewall active, no `subvolid` in fstab, Timeshift config, os-release.
+3. **Installed system** boots from the virtual disk and checks itself: SUFUN boot entry, `splash` and the Plymouth theme in the initramfs, login screen shown, `sufun-base` version = `VERSION`, zram, earlyoom and firewall active, no `subvolid` in fstab, Timeshift config, os-release. After the login-screen screenshot it logs the test user in automatically (**test disk only**: the autologin file is written by the test itself, a real install never has it) and checks the **Korean** desktop: Korean folder names (바탕화면, 문서, 다운로드), taskbar, tray, desktop icons.
 
-Results come from the virtual serial port, not from fixed waiting times. Screenshots (every minute) and serial logs are uploaded as the **sufun-test-results** artifact. KVM is used when the runner has it, otherwise slow software emulation with 4× longer time limits. **Releases are only signed if all tests pass.**
+Only in test mode, the installed system's boot options also get `plymouth.ignore-serial-consoles` (with the test's serial console, Plymouth would show text instead of the SUFUN splash). A real install's boot options are unchanged.
+
+Results come from the virtual serial port, not from fixed waiting times. Screenshots and serial logs are uploaded as the **sufun-test-results** artifact. Screenshots are taken every 10 seconds for the first 3 minutes of each virtual PC, then every minute; the file name tells the time since power-on, e.g. `3-installed-t0040.png` = 40 s. KVM is used when the runner has it, otherwise slow software emulation with 4× longer time limits. **Releases are only signed if all tests pass.**
 
 > The VM has no Surface hardware. **Touch, pen, cameras, Type Cover, lid, rotation and sleep must still be tested on the real device**: see the first-boot checklists in the camera, Korean input, lid and keyboard sections above.
 
@@ -468,7 +525,8 @@ Afterwards: set the UEFI password (see "UEFI 암호").
 - Our own packages (Selawik, ananicy rules, H2Orestart, Bottles) don't update with `pacman -Syu`; they come with `.sufun` updates.
 
 ## Known risks (not yet tested on real hardware)
-This project has been syntax-checked, and the update-file signing and checks were tested with a test key, but the ISO has not been built or booted yet. Most likely to need a fix after the first build:
+The ISO is built and boot-tested in GitHub Actions (virtual machine), but not yet on a real Surface Go 3. Most likely to need a fix on real hardware:
+- The Windows 11-style taskbar at 150% scale on the real 10.5" screen (sizes were chosen for 150%).
 - Building the pinned packages in CI (and Bottles once it is switched back on).
 - The Plasma layout script and theme names (if wrong, Plasma falls back to the normal KDE look; nothing breaks).
 - The first CI boot tests themselves (timeouts, the login-screen detection).

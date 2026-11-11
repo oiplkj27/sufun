@@ -4,14 +4,14 @@
 pkgname=sufun-fluent-icons
 pkgver=20260727
 _tag=2026-07-27
-pkgrel=1
+pkgrel=2
 pkgdesc="Fluent icon theme, standard color only (from vinceliuice/Fluent-icon-theme)"
 arch=(any)
 url=https://github.com/vinceliuice/Fluent-icon-theme
 license=(GPL-3.0-only)
 depends=(hicolor-icon-theme)
 conflicts=(fluent-icon-theme fluent-icon-theme-git)
-options=('!strip')
+options=('!strip' '!debug')   # icons: nothing to strip, no debug package
 source=("${url}/archive/refs/tags/${_tag}.tar.gz")
 b2sums=('db7107417d8424b4cbe345228ef1c127a4bbe3ef2ee568c25be52017f7d5561ad4494c78086ad5f098e075bc2021e3aae87350c4175e5874d080164eaeeb4a41')
 
@@ -24,4 +24,18 @@ package() {
   cd "Fluent-icon-theme-${_tag}"
   install -d "$pkgdir/usr/share/icons"
   ./install.sh standard --dest "$pkgdir/usr/share/icons" --name Fluent
+
+  # SUFUN's repository is public, so we never ship Microsoft's logos:
+  #  - every "start-here*" icon (Fluent draws the four-square Windows logo there;
+  #    the SUFUN icon theme in sufun-base provides the start button instead)
+  #  - Windows-logo folder/list icons, and Edge/Office/Teams/Skype/OneDrive/
+  #    Microsoft account app logos
+  # The generic ".ico" file-type icon (image-vnd.microsoft.icon) is kept: it is
+  # not a logo. Links that pointed to removed files are removed too.
+  cd "$pkgdir/usr/share/icons"
+  find . \( -iname 'start-here*' -o -iname 'folder-windows*' -o -iname '*windows-quick-list*' \
+            -o -iname 'ms-*' -o -iname 'live.svg' -o -iname 'excel.svg' -o -iname '*teams*' \
+            -o -iname '*skype*' -o -iname 'folder-onedrive*' -o -iname 'outlook-for-linux*' \
+            -o \( -iname '*microsoft*' ! -iname 'image-vnd.microsoft.icon*' \) \) -delete
+  find . -xtype l -delete
 }

@@ -1,17 +1,53 @@
-# Windows-style keyboard shortcuts (Win = Meta in KDE).
-# Format: action=current shortcut,default shortcut,description
+# Windows-style keyboard shortcuts (Win = Meta in KDE), for every new user.
+# Format in normal groups: action=current shortcut(s),default shortcut(s),description
+#   (several shortcuts are separated by a TAB, written here as \t; "none" = no shortcut)
+# Format in [services][<app>.desktop] groups: action=shortcut(s) only.
+#
+#   Win+E               Files (Dolphin)              Win+L        lock the screen
+#   Win+D               show the desktop             Win+arrows   snap windows
+#   Win+R               run box (KRunner)            Win+I        Settings
+#   Win+Tab             Task View (KWin Overview)    Win+V        clipboard history (Plasma default)
+#   Win+Shift+S         screenshot of an area        Win+A        quick settings (system tray)
+#   Win+N               notifications (set by /usr/lib/sufun/first-login)
+#   Ctrl+Shift+Esc      Task Manager (System Monitor)
+#   Win alone           start menu (kwinrc)          Print        Spectacle (screenshot tool)
 
 [services][org.kde.dolphin.desktop]
 _launch=Meta+E
+
+[services][org.kde.krunner.desktop]
+_launch=Alt+Space\tAlt+F2\tSearch\tMeta+R
+
+[services][systemsettings.desktop]
+_launch=Meta+I
+
+[services][org.kde.plasma-systemmonitor.desktop]
+_launch=Ctrl+Shift+Esc\tMeta+Esc
+
+[services][org.kde.spectacle.desktop]
+# Spectacle's own default puts Win+Shift+S on "open Spectacle" and Win+R on
+# "record a region". Like Windows: Win+Shift+S = select an area right away,
+# and Win+R is left free for the run box.
+_launch=Print
+RectangularRegionScreenShot=Meta+Shift+S\tMeta+Shift+Print
+RecordRegion=Meta+Shift+R
 
 [ksmserver]
 Lock Session=Meta+L\tScreensaver,Meta+L\tScreensaver,Lock Session
 
 [kwin]
 Show Desktop=Meta+D,Meta+D,Peek at Desktop
+# Win+Tab = Task View. KWin and Plasma also use Win+Tab for "switch windows"
+# and "switch activities"; those keep Alt+Tab / Win+Shift+Tab only.
+Overview=Meta+Tab\tMeta+W,Meta+W,Toggle Overview
+Walk Through Windows=Alt+Tab,Meta+Tab\tAlt+Tab,Walk Through Windows
+Walk Through Windows (Reverse)=Alt+Shift+Tab,Meta+Shift+Tab\tAlt+Shift+Tab,Walk Through Windows (Reverse)
 # Win+Left/Right = half screen. Then Win+Up/Down = quarter screen.
 Window Quick Tile Left=Meta+Left,Meta+Left,Quick Tile Window to the Left
 Window Quick Tile Right=Meta+Right,Meta+Right,Quick Tile Window to the Right
 Window Quick Tile Top=Meta+Up,Meta+Up,Quick Tile Window to the Top
 Window Quick Tile Bottom=Meta+Down,Meta+Down,Quick Tile Window to the Bottom
 Window Maximize=Meta+PgUp,Meta+PgUp,Maximize Window
+
+[plasmashell]
+next activity=none,Meta+Tab,Walk through activities

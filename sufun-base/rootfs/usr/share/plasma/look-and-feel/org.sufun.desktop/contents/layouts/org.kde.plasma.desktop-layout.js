@@ -1,21 +1,47 @@
-// Windows 11-style desktop: one taskbar at the bottom,
-// start button + app icons in the middle, tray and clock on the right.
-// Plasma runs this once, the first time a new user logs in.
+// Windows 11-style desktop and taskbar. Plasma runs this once, the first time
+// a new user logs in (live USB and installed system).
+//
+// Taskbar, left to right:
+//   [spacer] start | search box | Task View | Files Firefox Konsole Settings [spacer] tray | clock
+// Things that live INSIDE the tray (which icons are always visible, Win+N for
+// notifications) are set by /usr/lib/sufun/first-login, because this script
+// cannot reach the tray's inner widgets.
 
+// --- Desktop: icons like Windows (top-left, top-to-bottom columns) ---
 var desktopsArray = desktopsForActivity(currentActivity());
 for (var j = 0; j < desktopsArray.length; j++) {
-    desktopsArray[j].wallpaperPlugin = "org.kde.image";
+    var d = desktopsArray[j];
+    d.wallpaperPlugin = "org.kde.image";        // keep the default wallpaper
+    d.currentConfigGroup = ["General"];
+    d.writeConfig("arrangement", 1);            // 1 = columns (top to bottom)
+    d.writeConfig("alignment", 0);              // 0 = start at the left
+    d.writeConfig("iconSize", 2);               // 2 = 48 px, Windows' "medium icons"
 }
 
+// --- Taskbar ---
 var panel = new Panel;
 panel.location = "bottom";
 panel.height = 2 * Math.floor(gridUnit * 2.6 / 2);   // about 48 px at 100% scale
 panel.floating = false;                              // attached to the screen edge, like Windows 11
+panel.opacity = "opaque";                            // no transparency (performance)
 
-// Expanding spacer on each side pushes the start button and icons to the middle.
+// Expanding spacers on both sides keep the start button and apps in the middle.
 panel.addWidget("org.kde.plasma.panelspacer");
 
-panel.addWidget("org.kde.plasma.kickoff");           // start menu (Win key opens it)
+// Start menu (Kickoff). The Win key alone opens it (kwinrc ModifierOnlyShortcuts).
+// Pinned apps: /etc/xdg/kicker-extra-favoritesrc.
+var kickoff = panel.addWidget("org.kde.plasma.kickoff");
+kickoff.currentConfigGroup = ["General"];
+kickoff.writeConfig("icon", "start-here-kde");      // SUFUN logo (icon theme "SUFUN")
+kickoff.writeConfig("favoritesDisplay", 0);         // pinned apps as a grid
+kickoff.writeConfig("applicationsDisplay", 1);      // "All apps" as a list
+kickoff.writeConfig("primaryActions", 0);           // power buttons in the footer
+kickoff.writeConfig("systemFavorites", ["suspend", "reboot", "shutdown"]);
+kickoff.writeConfig("showActionButtonCaptions", false);
+kickoff.globalShortcut = "Alt+F1";
+
+panel.addWidget("org.sufun.search");                // "검색" box -> KRunner
+panel.addWidget("org.sufun.taskview");              // Task View -> KWin Overview
 
 var tasks = panel.addWidget("org.kde.plasma.icontasks");
 tasks.currentConfigGroup = ["General"];
@@ -28,6 +54,10 @@ tasks.writeConfig("launchers", [
 
 panel.addWidget("org.kde.plasma.panelspacer");
 
-panel.addWidget("org.kde.plasma.systemtray");
-panel.addWidget("org.kde.plasma.digitalclock");
-panel.addWidget("org.kde.plasma.showdesktop");       // thin "show desktop" button in the corner
+// System tray: the "^" arrow, 한/영, network, volume, battery. Win+A opens it
+// (closest thing to Windows 11's quick settings).
+var tray = panel.addWidget("org.kde.plasma.systemtray");
+tray.globalShortcut = "Meta+A";
+
+// Clock at the far right (two lines, 오전/오후, YYYY-MM-DD). Click = calendar.
+panel.addWidget("org.sufun.clock");

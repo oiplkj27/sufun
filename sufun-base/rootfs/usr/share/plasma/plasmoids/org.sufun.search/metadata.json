@@ -1,0 +1,16 @@
+{
+    "KPackageStructure": "Plasma/Applet",
+    "KPlugin": {
+        "Authors": [{ "Name": "SUFUN" }],
+        "Category": "Application Launchers",
+        "Description": "Windows 11-style search box: opens KRunner (apps, files, settings, calculator)",
+        "Description[ko]": "Windows 11 방식 검색 상자: KRunner(앱, 파일, 설정, 계산기)를 엽니다",
+        "Icon": "search",
+        "Id": "org.sufun.search",
+        "License": "GPL-2.0-or-later",
+        "Name": "SUFUN Search Box",
+        "Name[ko]": "SUFUN 검색 상자",
+        "Version": "1.0"
+    },
+    "X-Plasma-API-Minimum-Version": "6.0"
+}

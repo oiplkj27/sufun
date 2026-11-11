@@ -1,0 +1,16 @@
+{
+    "KPackageStructure": "Plasma/Applet",
+    "KPlugin": {
+        "Authors": [{ "Name": "SUFUN" }],
+        "Category": "Date and Time",
+        "Description": "Windows 11-style clock: time on top, date below, both right-aligned. Click for the calendar.",
+        "Description[ko]": "Windows 11 방식 시계: 위에 시간, 아래에 날짜. 누르면 달력이 열립니다.",
+        "Icon": "preferences-system-time",
+        "Id": "org.sufun.clock",
+        "License": "GPL-2.0-or-later",
+        "Name": "SUFUN Clock",
+        "Name[ko]": "SUFUN 시계",
+        "Version": "1.0"
+    },
+    "X-Plasma-API-Minimum-Version": "6.0"
+}

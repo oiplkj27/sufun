@@ -4,7 +4,7 @@
 pkgname=sufun-fluent-theme
 _commit=44794f29c89de994b0179aebabd2f5776c90d236
 pkgver=r105.44794f2
-pkgrel=1
+pkgrel=2
 pkgdesc="Fluent light color scheme + solid Plasma style (from vinceliuice/Fluent-kde)"
 arch=(any)
 url=https://github.com/vinceliuice/Fluent-kde
@@ -28,4 +28,7 @@ package() {
   install -Dm644 "$s/color-schemes/FluentLight.colors" "$pkgdir/usr/share/color-schemes/FluentLight.colors"
   install -d "$pkgdir/usr/share/plasma/desktoptheme"
   cp -r "$s/plasma/desktoptheme/Fluent-light-solid" "$pkgdir/usr/share/plasma/desktoptheme/"
+  # icons/start.svgz is the Windows logo. Plasma looks in the Plasma style before the
+  # icon theme, so without this file the start button shows the SUFUN logo.
+  find "$pkgdir/usr/share/plasma/desktoptheme" -name 'start.svg*' -delete
 }

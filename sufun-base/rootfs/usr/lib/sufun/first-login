@@ -1,14 +1,85 @@
 #!/usr/bin/env bash
-# Runs once for every user, at their first Plasma login.
+# Runs once for every user, at their first Plasma login (live USB: every boot,
+# because the live user is new each time).
+#   1. screen scale 150%
+#   2. taskbar tray: which icons are always visible + Win+N for notifications
+#   3. user folders in the user's language (Korean: 바탕화면, 문서, 다운로드 ...)
+#   4. desktop icons: 휴지통, Firefox, Steam, LibreOffice Writer, 메모장
 MARK="${XDG_CONFIG_HOME:-$HOME/.config}/sufun/first-login-done"
 [[ -f $MARK ]] && exit 0
+CFG="${XDG_CONFIG_HOME:-$HOME/.config}"
+APPLETS="$CFG/plasma-org.kde.plasma.desktop-appletsrc"
 sleep 3   # let KWin finish setting up the screens
 
-# Built-in screen at 150%. (Plasma would pick about 160-170% by itself on this
-# 10.5" 1920x1280 panel; 150% gives more room and an exact 3x DPI for older apps:
-# X11 apps such as Wine use 144 DPI = 1.5 x 96 and stay sharp.)
+# --- 1. Built-in screen at 150% ---
+# (Plasma would pick about 160-170% by itself on this 10.5" 1920x1280 panel;
+# 150% gives more room and an exact 3x DPI for older apps: X11 apps such as
+# Wine use 144 DPI = 1.5 x 96 and stay sharp.)
 out=$(kscreen-doctor -o 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' \
       | awk '/^Output:/ {print $3}' | grep -m1 -E '^eDP')
 [[ -n $out ]] && kscreen-doctor "output.$out.scale.1.5" >/dev/null 2>&1
+
+# --- 2. System tray (inside the taskbar) ---
+# Plasma's layout script can't reach the widgets inside the tray, so we edit the
+# saved taskbar settings while Plasma's shell is stopped for ~2 seconds, then
+# start it again. Only on the first login.
+#   always visible: 한/영 (Fcitx), network, volume, battery
+#   behind the "^" arrow: Bluetooth, notifications, clipboard, brightness, input method
+#   Win+N: opens the notifications widget
+notif_ids() {  # prints "<tray id> <notifications applet id>" from the saved layout
+  awk -F'[][]' '
+    /^\[Containments\]\[[0-9]+\]\[Applets\]\[[0-9]+\]$/ { c = $4; a = $8; next }
+    /^\[/ { c = ""; next }
+    c != "" && $0 == "plugin=org.kde.plasma.notifications" { print c, a; exit }
+  ' "$APPLETS" 2>/dev/null
+}
+ids=""
+for _ in $(seq 60); do        # Plasma saves the new layout a few seconds after login
+  ids=$(notif_ids); [[ -n $ids ]] && break; sleep 1
+done
+if [[ -n $ids ]]; then
+  read -r tray notif <<< "$ids"
+  systemctl --user stop plasma-plasmashell.service 2>/dev/null
+  w() { kwriteconfig6 --file "$APPLETS" --group Containments --group "$tray" "$@"; }
+  w --group General --key shownItems \
+    "Fcitx,org.kde.plasma.networkmanagement,org.kde.plasma.volume,org.kde.plasma.battery"
+  w --group General --key hiddenItems \
+    "org.kde.plasma.bluetooth,org.kde.plasma.notifications,org.kde.plasma.clipboard,org.kde.plasma.brightness,org.kde.plasma.manage-inputmethod"
+  w --group Applets --group "$notif" --group Shortcuts --key global "Meta+N"
+  systemctl --user start plasma-plasmashell.service 2>/dev/null
+fi
+
+# --- 3. User folders (names follow the language: 바탕화면, 문서, 다운로드, 사진 ...) ---
+xdg-user-dirs-update >/dev/null 2>&1
+
+# --- 4. Desktop icons, like Windows ---
+DESK=$(xdg-user-dir DESKTOP 2>/dev/null)
+if [[ -n $DESK && $DESK != "$HOME" ]]; then
+  mkdir -p "$DESK"
+  sleep 5   # the desktop is ready again after step 2; icons then appear in this order
+  if [[ ! -e $DESK/trash.desktop ]]; then
+    {
+      echo '[Desktop Entry]'
+      echo 'Type=Link'
+      echo 'Name=Trash'
+      echo 'Name[ko]=휴지통'
+      echo 'Icon=user-trash-full'
+      echo 'EmptyIcon=user-trash'
+      echo 'URL=trash:/'
+    } > "$DESK/trash.desktop"
+    sleep 0.5
+  fi
+  for app in firefox steam libreoffice-writer featherpad; do
+    for dir in /usr/local/share/applications /usr/share/applications; do
+      src="$dir/$app.desktop"
+      if [[ -f $src && ! -e $DESK/$app.desktop ]]; then
+        cp "$src" "$DESK/$app.desktop"
+        chmod 755 "$DESK/$app.desktop"   # "trusted": opens without a warning
+        sleep 0.5
+        break
+      fi
+    done
+  done
+fi
 
 mkdir -p "$(dirname "$MARK")" && touch "$MARK"
