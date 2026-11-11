@@ -3,9 +3,9 @@
 //
 // Taskbar, left to right:
 //   [spacer] start | search box | Task View | Files Firefox Konsole Settings [spacer] tray | clock
-// Things that live INSIDE the tray (which icons are always visible, Win+N for
-// notifications) are set by /usr/lib/sufun/first-login, because this script
-// cannot reach the tray's inner widgets.
+// Which tray icons are always visible is set here too. Win+N for the
+// notifications widget inside the tray is set by /usr/lib/sufun/first-login,
+// because that widget only exists after Plasma has started.
 
 // --- Desktop: icons like Windows (top-left, top-to-bottom columns) ---
 var desktopsArray = desktopsForActivity(currentActivity());
@@ -62,6 +62,14 @@ panel.addWidget("org.kde.plasma.panelspacer");
 // (closest thing to Windows 11's quick settings).
 var tray = panel.addWidget("org.kde.plasma.systemtray");
 tray.globalShortcut = "Meta+A";
+// Always visible: 한/영 (Fcitx), network, volume, battery. Behind "^": the rest.
+// (Plasma 6.8 keeps these in the tray widget's own [General] settings.)
+tray.currentConfigGroup = ["General"];
+tray.writeConfig("shownItems", ["Fcitx", "org.kde.plasma.networkmanagement",
+                                "org.kde.plasma.volume", "org.kde.plasma.battery"]);
+tray.writeConfig("hiddenItems", ["org.kde.plasma.bluetooth", "org.kde.plasma.notifications",
+                                 "org.kde.plasma.clipboard", "org.kde.plasma.brightness",
+                                 "org.kde.plasma.manage-inputmethod"]);
 
 // Clock at the far right (two lines, 오전/오후, YYYY-MM-DD). Click = calendar.
 panel.addWidget("org.sufun.clock");

@@ -2,7 +2,7 @@
 # Runs once for every user, at their first Plasma login (live USB: every boot,
 # because the live user is new each time).
 #   1. screen scale 150%
-#   2. taskbar tray: which icons are always visible + Win+N for notifications
+#   2. Win+N for notifications (needs a ~2 s restart of the taskbar)
 #   3. user folders in the user's language (Korean: 바탕화면, 문서, 다운로드 ...)
 #   4. desktop icons: 휴지통, Firefox, Steam, LibreOffice Writer, 메모장
 MARK="${XDG_CONFIG_HOME:-$HOME/.config}/sufun/first-login-done"
@@ -19,21 +19,19 @@ out=$(kscreen-doctor -o 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' \
       | awk '/^Output:/ {print $3}' | grep -m1 -E '^eDP')
 [[ -n $out ]] && kscreen-doctor "output.$out.scale.1.5" >/dev/null 2>&1
 
-# --- 2. System tray (inside the taskbar) ---
-# Plasma's layout script can't reach the widgets inside the tray, so we edit the
-# saved taskbar settings while Plasma's shell is stopped for ~2 seconds, then
-# start it again. Only on the first login.
-#   always visible: 한/영 (Fcitx), network, volume, battery
-#   behind the "^" arrow: Bluetooth, notifications, clipboard, brightness, input method
-#   Win+N: opens the notifications widget
-# Plasma writes the tray's inner widgets to the settings file only when the shell
-# quits, so: wait until the taskbar exists, stop the shell (it saves everything),
-# read the tray's numbers, change the settings, start the shell again.
-notif_ids() {  # prints "<tray id> <notifications applet id>" from the saved layout
+# --- 2. Win+N for notifications (inside the taskbar tray) ---
+# Which tray icons are always visible is set by the layout script. The
+# notifications widget inside the tray only exists after Plasma has started,
+# and Plasma writes it to the settings file only when the shell quits. So, once:
+# wait for the taskbar, stop the shell for ~2 seconds (it saves everything), add
+# the shortcut, start the shell again.
+# Plasma 6.8 saves the tray's widgets as
+#   [Containments][<panel>][Applets][<tray>][Applets][<widget>]
+notif_ids() {  # prints "<panel> <tray> <notifications widget>" from the saved layout
   awk -F'[][]' '
-    /^\[Containments\]\[[0-9]+\]\[Applets\]\[[0-9]+\]$/ { c = $4; a = $8; next }
-    /^\[/ { c = ""; next }
-    c != "" && $0 == "plugin=org.kde.plasma.notifications" { print c, a; exit }
+    /^\[Containments\]\[[0-9]+\]\[Applets\]\[[0-9]+\]\[Applets\]\[[0-9]+\]$/ { p = $4; t = $8; n = $12; next }
+    /^\[/ { p = ""; next }
+    p != "" && $0 == "plugin=org.kde.plasma.notifications" { print p, t, n; exit }
   ' "$APPLETS" 2>/dev/null
 }
 for _ in $(seq 60); do        # the taskbar is saved a few seconds after login
@@ -48,16 +46,13 @@ fi
 for _ in $(seq 20); do pgrep -u "$UID" -x plasmashell >/dev/null || break; sleep 0.5; done
 ids=$(notif_ids)
 if [[ -n $ids ]]; then
-  read -r tray notif <<< "$ids"
-  w() { kwriteconfig6 --file "$APPLETS" --group Containments --group "$tray" "$@"; }
-  w --group General --key shownItems \
-    "Fcitx,org.kde.plasma.networkmanagement,org.kde.plasma.volume,org.kde.plasma.battery"
-  w --group General --key hiddenItems \
-    "org.kde.plasma.bluetooth,org.kde.plasma.notifications,org.kde.plasma.clipboard,org.kde.plasma.brightness,org.kde.plasma.manage-inputmethod"
-  w --group Applets --group "$notif" --group Shortcuts --key global "Meta+N"
-  echo "sufun-first-login: tray $tray set (notifications applet $notif, shell restart: $how)"
+  read -r panel tray notif <<< "$ids"
+  kwriteconfig6 --file "$APPLETS" --group Containments --group "$panel" --group Applets \
+    --group "$tray" --group Applets --group "$notif" --group Shortcuts --key global "Meta+N"
+  echo "sufun-first-login: Win+N set (tray $panel/$tray, notifications $notif, restart: $how)"
 else
-  echo "sufun-first-login: tray not found in $APPLETS, tray left as Plasma's default"
+  echo "sufun-first-login: notifications widget not found; groups:" \
+       "$(grep -x -B3 'plugin=org.kde.plasma.notifications' "$APPLETS" 2>/dev/null | grep '^\[' | tr '\n' ' ')"
 fi
 if [[ $how == systemd ]]; then
   systemctl --user start plasma-plasmashell.service

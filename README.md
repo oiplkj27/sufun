@@ -54,7 +54,7 @@ Default for every new user, on the live USB and on the installed system (all in 
 | Clock | Small SUFUN widget `org.sufun.clock`: two lines, right-aligned, same size. Korean `오전 2:33` / English `2:33 AM`, below it `2026-11-12`. Click = Plasma's calendar | Plasma's Digital Clock always puts 오전/오후 *after* the time, draws the date smaller and centers both lines. |
 | Start menu | **Kickoff** (Plasma's own): pinned apps as a grid, user name + picture, power buttons. Pinned apps: `/etc/xdg/kicker-extra-favoritesrc`. Recent files: *Places → History* | See "Start menu: Kickoff, not Menu 11" below. |
 | Desktop icons | 휴지통, Firefox, Steam, LibreOffice Writer, 메모장, in columns from the top-left, 48 px, double-click to open | Made by `/usr/lib/sufun/first-login` in the user's desktop folder (`~/바탕화면` in Korean). The desktop sorts by date (oldest first), so this order stays and new files appear at the end, like Windows. |
-| Tray | Always visible: 한/영 (Fcitx5 shows text, not an icon), network, volume, battery. Behind `^`: Bluetooth, notifications, clipboard, brightness | Set by `first-login`: Plasma's layout script can't reach widgets *inside* the tray, so at the first login Plasma's shell is stopped for ~2 s (it saves the tray when it quits), the settings are written, and it starts again. |
+| Tray | Always visible: 한/영 (Fcitx5 shows text, not an icon), network, volume, battery. Behind `^`: Bluetooth, notifications, clipboard, brightness | Set by the layout script (Plasma 6.8 keeps them in the tray widget's own settings). Win+N is added by `first-login`: the notifications widget inside the tray only exists after Plasma starts, so at the first login the shell is stopped for ~2 s (it saves the tray when it quits), the shortcut is written, and it starts again. |
 | Alt+Tab | KWin **Thumbnail Grid**: live window previews | The only switcher with previews that comes with KWin itself (the others need `kdeplasma-addons`, +19 MB). |
 | Files (Dolphin) | Places pane on the left (Home, Desktop, Documents, Downloads, Pictures, ..., drives under *Devices*), address bar you can type into | Folder names follow the language (`xdg-user-dirs`): 바탕화면, 문서, 다운로드, 사진, ... |
 
@@ -74,7 +74,7 @@ Default for every new user, on the live USB and on the installed system (all in 
 | Win+D / Win+L / Win+arrows | desktop / lock / snap windows (as before) |
 | Ctrl+Shift+Esc | Task Manager (System Monitor; Win+Esc also works) |
 
-**Task Manager: plasma-systemmonitor (chosen) vs. htop.** plasma-systemmonitor costs **+3.0 MB** on disk (everything it needs is already installed with Plasma) and uses RAM only while it is open; htop (already installed, 0.4 MB) inside Konsole uses less RAM but is a terminal program that is hard to use with touch. plasma-systemmonitor works like the Windows Task Manager (click a program, *End Process*). htop stays installed. The CI live test measures both every build: see the `INFO ram task-manager` lines in `1-live-serial.log`.
+**Task Manager: plasma-systemmonitor (chosen) vs. htop.** plasma-systemmonitor costs **+3.0 MB** on disk (everything it needs is already installed with Plasma) and uses RAM only while it is open (measured: about **190 MB** while open, plasma-systemmonitor 186 MB + ksystemstats 7 MB); htop (already installed, 0.4 MB) inside Konsole uses much less (about **43 MB** with Konsole) but is a terminal program that is hard to use with touch. plasma-systemmonitor works like the Windows Task Manager (click a program, *End Process*). htop stays installed. The CI live test measures both every build: see the `INFO ram task-manager` lines in `1-live-serial.log`.
 
 **Start menu: Kickoff, not Menu 11.** The closest community menu, "Menu 11 Next" (GPL licence tag but no licence file; one-person fork), is ~6,000 lines of QML that uses Plasma's *private* start-menu API, was last released before Plasma 6.8, sends search text to DuckDuckGo and copies with X11-only tools. Arch updates Plasma all the time, so a broken start menu after an update would be the worst possible failure. Kickoff is updated together with Plasma. Differences you will see: user name/picture is at the **top** (Windows: bottom), and recent files are under *Places → History* instead of on the first page.
 
@@ -82,7 +82,7 @@ Default for every new user, on the live USB and on the installed system (all in 
 
 | | Disk | RAM |
 |---|---|---|
-| plasma-systemmonitor | +3.0 MB | only while open (measured in CI, see above) |
+| plasma-systemmonitor | +3.0 MB | about 190 MB, only while open (0 when closed) |
 | 3 SUFUN widgets (search, Task View, clock) | ~15 KB | a few MB inside the Plasma shell (small QML; the calendar loads only when you open it) |
 | SUFUN icon theme (PNG start logo, 9 sizes) | ~0.2 MB | – |
 | Removed Microsoft/Windows logos | −59 icon files, plus the Office-logo file-type icons | – |
