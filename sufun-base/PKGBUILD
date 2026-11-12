@@ -52,6 +52,13 @@ package() {
   rsvg-convert -w 120 -h 120 "$startdir/art/sufun-logo.svg" -o "$t/logo.png"
   rsvg-convert -h 56  "$startdir/art/sufun-text.svg"  -o "$t/sufun.png"
   rsvg-convert -w 40  "$startdir/art/spinner.svg"     -o "$t/spinner.png"
+  # Login splash (ksplash, org.sufun.desktop): the same three pictures, at twice
+  # the size shown, because Plasma scales the screen on the Surface.
+  t=usr/share/plasma/look-and-feel/org.sufun.desktop/contents/splash/images
+  install -d "$t"
+  rsvg-convert -w 240 -h 240 "$startdir/art/sufun-logo.svg" -o "$t/logo.png"
+  rsvg-convert -h 112 "$startdir/art/sufun-text.svg"  -o "$t/sufun.png"
+  rsvg-convert -w 80  "$startdir/art/spinner.svg"     -o "$t/spinner.png"
 
   # The SUFUN logo as a normal icon ("sufun-logo"): launchers (SUFUN Update,
   # System Update, Install SUFUN), the update password prompt, os-release LOGO.

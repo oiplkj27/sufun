@@ -62,9 +62,11 @@ PY
 
 # run_vm <name> <timeout-seconds> <success-regex> <fail-regex> <qemu args...>
 # FAST_SHOTS=<seconds> run_vm ...: screenshots about every 2 s for that long first
+# Also about every 2 s for 40 s after the VM prints "SUFUN-TEST: LOGIN-START"
+# (the installed-system test logging in: the SUFUN login splash appears then).
 run_vm() {
   local name=$1 timeout=$(( $2 * F )) ok=$3 bad=$4; shift 4
-  local fast=${FAST_SHOTS:-0} next_shot=10
+  local fast=${FAST_SHOTS:-0} next_shot=10 burst=0
   (( fast > 0 )) && next_shot=2
   local log="$name-serial.log" sock="$OUT/$name.sock" el start=$SECONDS result=TIMEOUT
   : > "$log"
@@ -78,14 +80,18 @@ run_vm() {
   local pid=$!
   echo "== $name started (timeout ${timeout}s)"
   while kill -0 $pid 2>/dev/null; do
-    if (( SECONDS - start < fast )); then sleep 1; else sleep 2; fi
+    el=$((SECONDS - start))
+    if (( burst == 0 )) && grep -q 'SUFUN-TEST: LOGIN-START' "$log"; then
+      burst=$((el + 40)); next_shot=$el
+    fi
+    if (( el < fast || el < burst )); then sleep 1; else sleep 2; fi
     # Screenshots: every 10 s for the first 3 minutes (boot splash, login screen,
     # desktop appearing), then every minute. File name = seconds since start,
     # e.g. 3-installed-t0040.png = 40 s after the virtual PC was switched on.
     el=$((SECONDS - start))
     if (( el >= next_shot )); then
       monitor "$sock" "screendump $name-t$(printf %04d "$el").png -f png"
-      if (( el < fast )); then next_shot=$((el + 2))
+      if (( el < fast || el < burst )); then next_shot=$((el + 2))
       elif (( el < 180 )); then next_shot=$((el + 10)); else next_shot=$((el + 60)); fi
     fi
     if grep -qE "$ok" "$log"; then result=OK; break; fi
@@ -111,7 +117,8 @@ run_vm 2-install 3600 'SUFUN-TEST: INSTALL-DONE' 'SUFUN-TEST: INSTALL-FAILED' \
 
 if (( ! fail )); then
   # Boot from the virtual disk only, like a real start: firmware -> systemd-boot -> SUFUN.
-  # Extra screenshots in the first 20 s catch the SUFUN boot splash (Plymouth).
+  # Extra screenshots in the first 20 s catch the SUFUN boot splash (Plymouth),
+  # and after LOGIN-START the SUFUN login splash (ksplash).
   FAST_SHOTS=20 run_vm 3-installed 1200 'SUFUN-TEST: INSTALLED-DONE' 'SUFUN-TEST: NEVER' \
     -drive file=disk.qcow2,if=virtio,format=qcow2 || fail=1
   log=3-installed-serial.log

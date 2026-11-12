@@ -50,6 +50,17 @@ check_image() {
   check start-logo-sufun     test -f /usr/share/icons/SUFUN/48x48/places/start-here-kde.png
   check sufun-logo-icons     test -f /usr/share/icons/hicolor/16x16/apps/sufun-logo.png -a -f /usr/share/icons/hicolor/256x256/apps/sufun-logo.png -a -f /usr/share/pixmaps/sufun-logo.png
   check taskview-icon        test -f /usr/share/icons/hicolor/scalable/actions/sufun-taskview.svg
+  # Login splash (ksplash): SUFUN's own theme, never the KDE one
+  check ksplash-sufun        bash -c 'grep -qx "Theme=org.sufun.desktop" /etc/xdg/ksplashrc && grep -qx "Engine=KSplashQML" /etc/xdg/ksplashrc'
+  check ksplash-files        bash -c 'd=/usr/share/plasma/look-and-feel/org.sufun.desktop/contents/splash; test -f $d/Splash.qml -a -f $d/images/logo.png -a -f $d/images/sufun.png -a -f $d/images/spinner.png'
+  # No hibernation with zram: logind must not offer it (so the button is hidden);
+  # normal sleep must not be switched off.
+  local hib sus
+  hib=$(busctl call org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager CanHibernate 2>/dev/null)
+  sus=$(busctl call org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager CanSuspend 2>/dev/null)
+  say "INFO logind CanHibernate: ${hib:-?}, CanSuspend: ${sus:-?}"
+  check hibernate-hidden     bash -c '[[ -n $1 && $1 != *yes* && $1 != *challenge* ]]' _ "$hib"
+  check suspend-allowed      bash -c '! systemd-analyze cat-config systemd/sleep.conf | grep -Eq "^AllowSuspend=(no|false|0)"'
   # Windows logos were: start-here* in the Fluent icons, icons/start.svg* in the
   # Fluent Plasma style. (Fluent's actions/start.svg is only an arrow, and Breeze's
   # start.svgz is the KDE logo, so those are not counted.)
@@ -163,6 +174,7 @@ case "$MODE" in
     # (This file exists only on the CI test disk; a real install has no autologin.)
     mkdir -p /etc/sddm.conf.d
     printf '[Autologin]\nUser=tester\nSession=plasma\n' > /etc/sddm.conf.d/99-sufun-test-autologin.conf
+    say "LOGIN-START"   # the CI script takes screenshots every 2 s now (login splash)
     systemctl restart sddm
     if wait_for 600 desktop_up tester; then
       wait_for 240 first_login_done tester

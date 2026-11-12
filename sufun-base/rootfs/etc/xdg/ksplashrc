@@ -1,0 +1,7 @@
+# Splash screen shown after logging in, while Plasma starts: the SUFUN one
+# (org.sufun.desktop/contents/splash/Splash.qml), same look as the boot screen.
+# System Settings > Colors & Themes > Splash Screen writes ~/.config/ksplashrc,
+# which wins over this file.
+[KSplash]
+Engine=KSplashQML
+Theme=org.sufun.desktop
