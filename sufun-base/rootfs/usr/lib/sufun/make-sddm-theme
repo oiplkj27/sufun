@@ -1,0 +1,77 @@
+#!/bin/bash
+# Makes the SUFUN login-screen theme from the installed Breeze SDDM theme:
+#   make-sddm-theme <breeze dir> <output dir> [--hook]
+# The copy is identical to Breeze (same QML, same license headers, same
+# pictures) except for ONE change in Main.qml: the "Hibernate" (최대 절전 모드)
+# button is removed. Breeze only greys that button out when hibernation is not
+# available (it has "enabled: sddm.canHibernate" but no "visible:"), and SUFUN
+# never has hibernation (swap is zram, in RAM).
+#
+# Used twice:
+#  - when sufun-base is built (PKGBUILD): any problem stops the build, so CI
+#    notices at once when a new Plasma changes Breeze's Main.qml;
+#  - by a pacman hook after every plasma-desktop update (--hook), so the copy
+#    always matches the Breeze that is installed. If the change can't be made
+#    there, the copy becomes plain Breeze (button greyed out again, but the login
+#    screen keeps working) and a warning is printed.
+set -euo pipefail
+src=${1:?breeze dir} dst=${2:?output dir} hook=${3:-}
+
+make_copy() {  # make_copy <tmp dir>: copy + patch; returns 1 if the patch did not apply
+  local t=$1 before after
+  cp -a "$src/." "$t/"
+  # Remove the ActionButton { ... } block that calls sddm.hibernate().
+  awk '
+    !inblk && /^[[:space:]]*ActionButton[[:space:]]*\{[[:space:]]*$/ { inblk = 1; depth = 0; buf = "" }
+    inblk {
+      buf = buf $0 "\n"
+      n = gsub(/\{/, "{"); m = gsub(/\}/, "}"); depth += n - m
+      if (depth == 0) {
+        inblk = 0
+        if (buf ~ /sddm\.hibernate\(\)/) {
+          dropped++
+          # Only safe when the block ends with "}," (not the last item in the list).
+          if ($0 !~ /\},[[:space:]]*$/) bad = 1
+        } else printf "%s", buf
+      }
+      next
+    }
+    { print }
+    END { if (dropped != 1 || bad) exit 3 }
+  ' "$src/Main.qml" > "$t/Main.qml" || return 1
+  before=$(grep -c 'ActionButton {' "$src/Main.qml" || true)
+  after=$(grep -c 'ActionButton {' "$t/Main.qml" || true)
+  (( before - after == 1 )) || return 1
+  ! grep -rq 'hibernate' "$t"/*.qml || return 1
+  # Its own name in System Settings > Login Screen (SDDM).
+  sed -i -e '/^Name\[/d' -e '/^Description\[/d' \
+      -e 's/^Name=.*/Name=SUFUN/' \
+      -e 's/^Description=.*/Description=Breeze login screen without the Hibernate button (made from the installed Breeze theme)/' \
+      -e 's/^Theme-Id=.*/Theme-Id=sufun/' "$t/metadata.desktop"
+  cat > "$t/SUFUN-README.txt" <<'TXT'
+This theme is generated from the Breeze SDDM theme of the installed
+plasma-desktop package (KDE, LGPL-2.0-or-later / CC-BY-SA; see the headers
+in each file) by /usr/lib/sufun/make-sddm-theme. The only change: the
+"Hibernate" button is removed from Main.qml, because SUFUN has no
+hibernation. It is made again after every plasma-desktop update.
+TXT
+}
+
+tmp=$(mktemp -d "$(dirname "$dst")/.sufun-theme.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT
+if ! make_copy "$tmp"; then
+  if [[ $hook != --hook ]]; then
+    echo "make-sddm-theme: Breeze's Main.qml changed; could not remove the Hibernate button" >&2
+    exit 1
+  fi
+  echo "SUFUN: 경고 - 새 Breeze 로그인 화면에서 '최대 절전 모드' 버튼을 숨기지 못했습니다 (버튼만 회색으로 보이고 로그인은 정상입니다)." >&2
+  rm -rf "$tmp"; mkdir -p "$tmp"
+  cp -a "$src/." "$tmp/"
+  sed -i -e 's/^Theme-Id=.*/Theme-Id=sufun/' "$tmp/metadata.desktop"
+fi
+# Keep settings that System Settings saved for this theme.
+[[ -f $dst/theme.conf.user ]] && cp -a "$dst/theme.conf.user" "$tmp/"
+chmod 755 "$tmp"
+rm -rf "$dst"
+mv "$tmp" "$dst"
+trap - EXIT

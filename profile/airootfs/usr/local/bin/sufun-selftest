@@ -53,13 +53,13 @@ check_image() {
   # Login splash (ksplash): SUFUN's own theme, never the KDE one
   check ksplash-sufun        bash -c 'grep -qx "Theme=org.sufun.desktop" /etc/xdg/ksplashrc && grep -qx "Engine=KSplashQML" /etc/xdg/ksplashrc'
   check ksplash-files        bash -c 'd=/usr/share/plasma/look-and-feel/org.sufun.desktop/contents/splash; test -f $d/Splash.qml -a -f $d/images/logo.png -a -f $d/images/sufun.png -a -f $d/images/spinner.png'
-  # No hibernation with zram: logind must not offer it (so the button is hidden);
-  # normal sleep must not be switched off.
+  # No hibernation with zram: logind must not offer it (Plasma's logout screen and
+  # Kickoff then hide the button); normal sleep must not be switched off.
   local hib sus
   hib=$(busctl call org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager CanHibernate 2>/dev/null)
   sus=$(busctl call org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager CanSuspend 2>/dev/null)
   say "INFO logind CanHibernate: ${hib:-?}, CanSuspend: ${sus:-?}"
-  check hibernate-hidden     bash -c '[[ -n $1 && $1 != *yes* && $1 != *challenge* ]]' _ "$hib"
+  check logind-no-hibernate  bash -c '[[ -n $1 && $1 != *yes* && $1 != *challenge* ]]' _ "$hib"
   check suspend-allowed      bash -c '! systemd-analyze cat-config systemd/sleep.conf | grep -Eq "^AllowSuspend=(no|false|0)"'
   # Windows logos were: start-here* in the Fluent icons, icons/start.svg* in the
   # Fluent Plasma style. (Fluent's actions/start.svg is only an arrow, and Breeze's
@@ -100,7 +100,8 @@ ram_report() {  # ram_report <user>
   say "INFO ram task-manager konsole+htop $(pss_mb $(pgrep -u "$u" -x konsole) $(pgrep -u "$u" -x htop)) MB"
   pkill -u "$u" -x konsole; sleep 3
 }
-# --- Login screen: SDDM must use the Breeze theme on Wayland, not its fallback ---
+# --- Login screen: SDDM must use the SUFUN theme (Breeze without Hibernate) on
+# Wayland, not its fallback ---
 greeter_check() {
   local cmd logs
   # The SDDM daemon starts the greeter with "--theme <folder>"; with no theme it
@@ -115,8 +116,32 @@ greeter_check() {
   tail -n 12 <<< "$logs" | while IFS= read -r line; do [[ -n $line ]] && say "LOG greeter: $line"; done
   journalctl -b -u sddm --no-pager -o cat 2>/dev/null | tail -n 8 \
     | while IFS= read -r line; do say "LOG sddm: $line"; done
-  check greeter-breeze-theme bash -c '[[ $1 == *"--theme /usr/share/sddm/themes/breeze"* && $2 != *"Fallback to embedded theme"* ]]' _ "$cmd" "$logs"
+  check greeter-sufun-theme  bash -c '[[ $1 == *"--theme /usr/share/sddm/themes/sufun"* && $2 != *"Fallback to embedded theme"* ]]' _ "$cmd" "$logs"
+  # The theme the greeter really loaded must not contain the Hibernate button:
+  # no "hibernate" anywhere in its QML (Breeze's button calls sddm.hibernate()).
+  local dir
+  dir=$(sed -n 's/.*--theme \([^ ]*\).*/\1/p' <<< "$cmd")
+  say "INFO greeter theme folder: ${dir:-?}"
+  check greeter-no-hibernate bash -c '[[ -f $1/Main.qml ]] && ! grep -qi hibernate "$1"/*.qml' _ "$dir"
+  # ...and apart from that it is the installed Breeze, unchanged: Main.qml only
+  # lost lines (nothing added), all other files are identical.
+  check greeter-same-as-breeze bash -c 'b=/usr/share/sddm/themes/breeze; ! diff "$b/Main.qml" "$1/Main.qml" | grep -q "^>" && diff -rq -x Main.qml -x metadata.desktop -x SUFUN-README.txt -x theme.conf.user "$b" "$1"' _ "$dir"
   check greeter-wayland      pgrep -u sddm -x kwin_wayland
+}
+
+# --- Plasma's logout screen (Ctrl+Alt+Del / power menu): open it for a screenshot.
+# It hides Hibernate itself when logind says it isn't available. ---
+logout_screen() {  # logout_screen <user>
+  local u=$1
+  # promptAll = the full screen with every button (sleep, restart, shut down, log out)
+  as_user "$u" busctl --user call org.kde.LogoutPrompt /LogoutPrompt org.kde.LogoutPrompt promptAll
+  sleep 6
+  check logout-screen-open   pgrep -u "$u" -f ksmserver-logout-greeter
+  say "SHOT logout"   # the CI script saves 3-installed-logout.png now
+  sleep 8
+  # Close it without choosing anything (it would act by itself after 30 s).
+  pkill -u "$u" -f ksmserver-logout-greeter
+  sleep 2
 }
 
 # If something went wrong: first-login's messages and widget errors, to the serial log
@@ -182,6 +207,7 @@ case "$MODE" in
       check korean-language   grep -q '^LANG=ko_KR' /etc/locale.conf
       check korean-folders    test -d /home/tester/바탕화면 -a -d /home/tester/문서 -a -d /home/tester/다운로드
       check_desktop tester
+      logout_screen tester
     else
       say "FAIL desktop-login"
     fi

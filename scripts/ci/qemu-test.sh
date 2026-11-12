@@ -66,7 +66,7 @@ PY
 # (the installed-system test logging in: the SUFUN login splash appears then).
 run_vm() {
   local name=$1 timeout=$(( $2 * F )) ok=$3 bad=$4; shift 4
-  local fast=${FAST_SHOTS:-0} next_shot=10 burst=0
+  local fast=${FAST_SHOTS:-0} next_shot=10 burst=0 named=0 n label
   (( fast > 0 )) && next_shot=2
   local log="$name-serial.log" sock="$OUT/$name.sock" el start=$SECONDS result=TIMEOUT
   : > "$log"
@@ -85,6 +85,14 @@ run_vm() {
       burst=$((el + 40)); next_shot=$el
     fi
     if (( el < fast || el < burst )); then sleep 1; else sleep 2; fi
+    # "SUFUN-TEST: SHOT <label>": the VM asks for a screenshot now, saved as
+    # <name>-<label>.png (e.g. 3-installed-logout.png, the Plasma logout screen).
+    n=$(grep -c 'SUFUN-TEST: SHOT ' "$log" || true)
+    if (( n > named )); then
+      named=$n
+      label=$(grep -o 'SUFUN-TEST: SHOT [a-z0-9-]*' "$log" | tail -n 1 | awk '{print $3}')
+      monitor "$sock" "screendump $name-$label.png -f png"
+    fi
     # Screenshots: every 10 s for the first 3 minutes (boot splash, login screen,
     # desktop appearing), then every minute. File name = seconds since start,
     # e.g. 3-installed-t0040.png = 40 s after the virtual PC was switched on.

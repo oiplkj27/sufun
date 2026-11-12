@@ -22,7 +22,7 @@ _ours() { awk '{sub(/#.*/,"")} NF && $2 != "build-only" {print $1}' aur.txt; }
 depends=(sufun-keyring $(_list desktop.txt) $(_ours))
 # rsvg-convert renders the boot screen text and logo; the fonts are only needed for that.
 # The Fluent package provides the colors added to kdeglobals.
-makedepends=(librsvg ttf-selawik ttf-dejavu sufun-fluent-theme)
+makedepends=(librsvg ttf-selawik ttf-dejavu sufun-fluent-theme plasma-desktop)
 # /etc files: if you edit one, a SUFUN update writes its new version as .pacnew
 backup=($(cd rootfs && find etc -type f | sort))
 
@@ -101,6 +101,13 @@ package() {
       printf '\n[%sx%s/places]\nSize=%s\nContext=Places\nType=Threshold\n' "$s" "$s" "$s"
     done
   } > usr/share/icons/SUFUN/index.theme
+
+  # Login screen theme "sufun": the installed Breeze SDDM theme with only the
+  # Hibernate button removed (see usr/lib/sufun/make-sddm-theme). Made here from
+  # the Breeze of this build's plasma-desktop, and again by a pacman hook after
+  # every plasma-desktop update. The build stops if Breeze changed too much.
+  install -d usr/share/sddm/themes
+  bash usr/lib/sufun/make-sddm-theme /usr/share/sddm/themes/breeze usr/share/sddm/themes/sufun
 
   # Steam must never start at login, even if "Run Steam when my computer starts"
   # is switched on later: mask the unit Plasma creates for ~/.config/autostart/steam.desktop.

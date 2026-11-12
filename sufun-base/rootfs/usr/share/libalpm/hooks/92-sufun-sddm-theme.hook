@@ -1,0 +1,14 @@
+# The SUFUN login screen is a copy of Breeze's (without the Hibernate button).
+# After every update of plasma-desktop (which brings Breeze) it is made again
+# from the new Breeze, so the two never drift apart.
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = plasma-desktop
+Target = sufun-base
+
+[Action]
+Description = SUFUN: 로그인 화면 테마 업데이트 중...
+When = PostTransaction
+Exec = /usr/lib/sufun/make-sddm-theme /usr/share/sddm/themes/breeze /usr/share/sddm/themes/sufun --hook
