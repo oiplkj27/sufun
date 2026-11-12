@@ -35,6 +35,7 @@ check_desktop() {
   check taskbar-task-view    grep -qx 'plugin=org.sufun.taskview' "$applets"
   check taskbar-clock        grep -qx 'plugin=org.sufun.clock' "$applets"
   check tray-always-visible  grep -q '^shownItems=Fcitx,' "$applets"
+  check tray-arrow-left      grep -qx 'reverseIconOrder=true' "$applets"
   check shortcut-win-a       grep -qx 'global=Meta+A' "$applets"
   check shortcut-win-n       grep -qx 'global=Meta+N' "$applets"
   check desktop-icons        bash -c "cd '$desk' && test -f trash.desktop -a -x firefox.desktop -a -x steam.desktop -a -x libreoffice-writer.desktop -a -x featherpad.desktop"
@@ -47,6 +48,8 @@ check_desktop() {
 # --- Things in the image: SUFUN start logo, no Microsoft logos ---
 check_image() {
   check start-logo-sufun     test -f /usr/share/icons/SUFUN/48x48/places/start-here-kde.png
+  check sufun-logo-icons     test -f /usr/share/icons/hicolor/16x16/apps/sufun-logo.png -a -f /usr/share/icons/hicolor/256x256/apps/sufun-logo.png -a -f /usr/share/pixmaps/sufun-logo.png
+  check taskview-icon        test -f /usr/share/icons/hicolor/scalable/actions/sufun-taskview.svg
   # Windows logos were: start-here* in the Fluent icons, icons/start.svg* in the
   # Fluent Plasma style. (Fluent's actions/start.svg is only an arrow, and Breeze's
   # start.svgz is the KDE logo, so those are not counted.)
@@ -86,6 +89,25 @@ ram_report() {  # ram_report <user>
   say "INFO ram task-manager konsole+htop $(pss_mb $(pgrep -u "$u" -x konsole) $(pgrep -u "$u" -x htop)) MB"
   pkill -u "$u" -x konsole; sleep 3
 }
+# --- Login screen: SDDM must use the Breeze theme on Wayland, not its fallback ---
+greeter_check() {
+  local cmd logs
+  # The SDDM daemon starts the greeter with "--theme <folder>"; with no theme it
+  # leaves that out and the greeter uses its built-in fallback screen.
+  cmd=$(pgrep -af sddm-greeter | grep -- '--theme' | head -n 1)
+  say "INFO greeter: ${cmd:-no greeter with --theme found}"
+  # The greeter prints "Loading file:///.../Main.qml..." and, if the theme has
+  # an error, the QML errors and "Fallback to embedded theme".
+  logs=$( { journalctl -b --no-pager -o cat 2>/dev/null
+            cat /var/lib/sddm/.local/share/sddm/*.log 2>/dev/null; } \
+          | grep -E 'Loading file:|Fallback to embedded|qrc:/theme|sddm/themes|\.qml:[0-9]+' )
+  tail -n 12 <<< "$logs" | while IFS= read -r line; do [[ -n $line ]] && say "LOG greeter: $line"; done
+  journalctl -b -u sddm --no-pager -o cat 2>/dev/null | tail -n 8 \
+    | while IFS= read -r line; do say "LOG sddm: $line"; done
+  check greeter-breeze-theme bash -c '[[ $1 == *"--theme /usr/share/sddm/themes/breeze"* && $2 != *"Fallback to embedded theme"* ]]' _ "$cmd" "$logs"
+  check greeter-wayland      pgrep -u sddm -x kwin_wayland
+}
+
 # If something went wrong: first-login's messages and widget errors, to the serial log
 diagnose() {
   journalctl -b --no-pager -o cat 2>/dev/null \
@@ -126,6 +148,7 @@ case "$MODE" in
     check splash-option      grep -qw splash /proc/cmdline
     check plymouth-theme     bash -c '[[ $(plymouth-set-default-theme) == sufun ]]'
     check plymouth-initramfs bash -c 'lsinitcpio /boot/initramfs-linux-surface.img | grep -q "plymouth/themes/sufun/sufun.png"'
+    check plymouth-logo      bash -c 'lsinitcpio /boot/initramfs-linux-surface.img | grep -q "plymouth/themes/sufun/logo.png"'
     check login-screen       wait_for 600 greeter_up
     check zram               bash -c 'swapon --show=NAME --noheadings | grep -q zram'
     check earlyoom           systemctl is-active earlyoom
@@ -135,6 +158,7 @@ case "$MODE" in
     check timeshift-config   test -f /etc/timeshift/timeshift.json
     check os-release         grep -q '^ID=sufun' /etc/os-release
     sleep 20      # time for a screenshot of the login screen
+    greeter_check
     # Test only: log the test user in automatically to check the Korean desktop.
     # (This file exists only on the CI test disk; a real install has no autologin.)
     mkdir -p /etc/sddm.conf.d

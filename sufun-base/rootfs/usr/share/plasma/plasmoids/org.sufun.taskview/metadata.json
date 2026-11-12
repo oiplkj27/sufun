@@ -5,7 +5,7 @@
         "Category": "Windows and Tasks",
         "Description": "Windows 11-style Task View button: opens KWin's Overview (all windows and desktops)",
         "Description[ko]": "Windows 11 방식 작업 보기 단추: 모든 창과 데스크톱을 보여 줍니다(KWin 개요)",
-        "Icon": "multitasking-view",
+        "Icon": "sufun-taskview",
         "Id": "org.sufun.taskview",
         "License": "GPL-2.0-or-later",
         "Name": "SUFUN Task View",

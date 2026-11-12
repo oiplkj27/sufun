@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
-  <!-- SUFUN logo: blue rounded square with a white "S" (used in Settings > About) -->
-  <rect x="8" y="8" width="240" height="240" rx="56" fill="#1793d1"/>
-  <text x="128" y="182" text-anchor="middle" fill="#ffffff"
-        font-family="Selawik, DejaVu Sans, sans-serif" font-size="170" font-weight="600">S</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- SUFUN logo: flowing S in a sunset gradient with a small sun (original artwork) -->
+  <defs><linearGradient id="g" x1="1" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ff9f43"/><stop offset=".5" stop-color="#ee5a9a"/><stop offset="1" stop-color="#5f6bff"/></linearGradient></defs>
+  <path d="M66 30 A21 21 0 1 0 50 50 A21 21 0 1 1 29 73" fill="none" stroke="url(#g)" stroke-width="14" stroke-linecap="round"/>
+  <circle cx="78" cy="21" r="9" fill="#ffb020"/>
 </svg>

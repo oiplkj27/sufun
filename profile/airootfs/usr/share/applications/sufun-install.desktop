@@ -5,6 +5,6 @@ Name[ko]=SUFUN 설치
 Comment=Install SUFUN to the internal drive of this Surface Go 3
 Comment[ko]=이 Surface Go 3의 내장 드라이브에 SUFUN 설치
 Exec=konsole -e sudo /usr/local/bin/sufun-install
-Icon=system-software-install
+Icon=sufun-logo
 Terminal=false
 Categories=System;

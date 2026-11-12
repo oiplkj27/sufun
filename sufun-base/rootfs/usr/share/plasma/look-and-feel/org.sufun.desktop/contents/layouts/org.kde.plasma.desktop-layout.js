@@ -2,7 +2,7 @@
 // a new user logs in (live USB and installed system).
 //
 // Taskbar, left to right:
-//   [spacer] start | search box | Task View | Files Firefox Konsole Settings [spacer] tray | clock
+//   [spacer] start | search box | Task View | Files Firefox Konsole Settings [spacer] ^ tray | clock
 // Which tray icons are always visible is set here too. Win+N for the
 // notifications widget inside the tray is set by /usr/lib/sufun/first-login,
 // because that widget only exists after Plasma has started.
@@ -70,6 +70,10 @@ tray.writeConfig("shownItems", ["Fcitx", "org.kde.plasma.networkmanagement",
 tray.writeConfig("hiddenItems", ["org.kde.plasma.bluetooth", "org.kde.plasma.notifications",
                                  "org.kde.plasma.clipboard", "org.kde.plasma.brightness",
                                  "org.kde.plasma.manage-inputmethod"]);
+// "^" (hidden icons) at the LEFT end of the tray, like Windows 11. Plasma has no
+// separate option for the arrow: "reverse icon order" mirrors the whole tray, so
+// the arrow moves to the left and the visible icons are listed right-to-left.
+tray.writeConfig("reverseIconOrder", true);
 
 // Clock at the far right (two lines, 오전/오후, YYYY-MM-DD). Click = calendar.
 panel.addWidget("org.sufun.clock");

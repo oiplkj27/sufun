@@ -11,7 +11,8 @@
 # Success is read from the serial console ("SUFUN-TEST: ..." lines written by
 # sufun-selftest), not from fixed waiting times. Screenshots are saved every
 # 10 seconds for the first 3 minutes, then every minute (QEMU monitor
-# "screendump"), plus the serial logs: upload <output-dir>.
+# "screendump"), plus the serial logs: upload <output-dir>. The installed system
+# also gets one about every 2 seconds for its first 20 seconds (boot splash).
 #
 # Needs: qemu-system-x86_64, qemu-img, OVMF (UEFI firmware), xorriso, python3.
 # Uses KVM when /dev/kvm is usable, otherwise slow software emulation with longer timeouts.
@@ -60,9 +61,12 @@ PY
 }
 
 # run_vm <name> <timeout-seconds> <success-regex> <fail-regex> <qemu args...>
+# FAST_SHOTS=<seconds> run_vm ...: screenshots about every 2 s for that long first
 run_vm() {
   local name=$1 timeout=$(( $2 * F )) ok=$3 bad=$4; shift 4
-  local log="$name-serial.log" sock="$OUT/$name.sock" next_shot=10 el start=$SECONDS result=TIMEOUT
+  local fast=${FAST_SHOTS:-0} next_shot=10
+  (( fast > 0 )) && next_shot=2
+  local log="$name-serial.log" sock="$OUT/$name.sock" el start=$SECONDS result=TIMEOUT
   : > "$log"
   qemu-system-x86_64 "${ACCEL[@]}" -machine q35 -smp 2 -m 4096 \
     -drive if=pflash,format=raw,readonly=on,file="$CODE" \
@@ -74,14 +78,15 @@ run_vm() {
   local pid=$!
   echo "== $name started (timeout ${timeout}s)"
   while kill -0 $pid 2>/dev/null; do
-    sleep 2
+    if (( SECONDS - start < fast )); then sleep 1; else sleep 2; fi
     # Screenshots: every 10 s for the first 3 minutes (boot splash, login screen,
     # desktop appearing), then every minute. File name = seconds since start,
     # e.g. 3-installed-t0040.png = 40 s after the virtual PC was switched on.
     el=$((SECONDS - start))
     if (( el >= next_shot )); then
       monitor "$sock" "screendump $name-t$(printf %04d "$el").png -f png"
-      if (( el < 180 )); then next_shot=$((el + 10)); else next_shot=$((el + 60)); fi
+      if (( el < fast )); then next_shot=$((el + 2))
+      elif (( el < 180 )); then next_shot=$((el + 10)); else next_shot=$((el + 60)); fi
     fi
     if grep -qE "$ok" "$log"; then result=OK; break; fi
     if grep -qE "$bad" "$log"; then result=FAILED; break; fi
@@ -105,8 +110,9 @@ run_vm 2-install 3600 'SUFUN-TEST: INSTALL-DONE' 'SUFUN-TEST: INSTALL-FAILED' \
   -kernel vmlinuz -initrd initrd.img -append "$LIVEOPTS sufun.test=install" || fail=1
 
 if (( ! fail )); then
-  # Boot from the virtual disk only, like a real start: firmware -> systemd-boot -> SUFUN
-  run_vm 3-installed 1200 'SUFUN-TEST: INSTALLED-DONE' 'SUFUN-TEST: NEVER' \
+  # Boot from the virtual disk only, like a real start: firmware -> systemd-boot -> SUFUN.
+  # Extra screenshots in the first 20 s catch the SUFUN boot splash (Plymouth).
+  FAST_SHOTS=20 run_vm 3-installed 1200 'SUFUN-TEST: INSTALLED-DONE' 'SUFUN-TEST: NEVER' \
     -drive file=disk.qcow2,if=virtio,format=qcow2 || fail=1
   log=3-installed-serial.log
   if grep -q 'SUFUN-TEST: FAIL' "$log"; then echo "Some checks failed on the installed system"; fail=1; fi

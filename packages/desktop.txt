@@ -33,8 +33,8 @@ sddm
 sddm-kcm                 # System Settings > Login Screen (auto-login option)
 accountsservice          # System Settings > Users (password, account picture)
 polkit-kde-agent         # password prompts for admin actions (Partition Manager, updates)
-qt6-virtualkeyboard      # on-screen keyboard at the login screen
-plasma-keyboard          # on-screen keyboard for tablet mode (and the lock screen)
+qt6-virtualkeyboard      # Qt's on-screen keyboard (the login screen uses plasma-keyboard; plasma-workspace needs this anyway)
+plasma-keyboard          # on-screen keyboard for tablet mode, the lock screen and the login screen
 kscreen
 powerdevil
 plasma-nm

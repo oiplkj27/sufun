@@ -47,23 +47,38 @@ package() {
     /usr/share/color-schemes/FluentLight.colors >> etc/xdg/kdeglobals
 
   # Pictures rendered now, so no fonts are needed at boot time.
+  # Boot screen: SUFUN logo (120 px), the word SUFUN below it, spinner below that.
   local t=usr/share/plymouth/themes/sufun
-  rsvg-convert -h 140 "$startdir/art/sufun-text.svg" -o "$t/sufun.png"
-  rsvg-convert -w 48  "$startdir/art/spinner.svg"   -o "$t/spinner.png"
+  rsvg-convert -w 120 -h 120 "$startdir/art/sufun-logo.svg" -o "$t/logo.png"
+  rsvg-convert -h 56  "$startdir/art/sufun-text.svg"  -o "$t/sufun.png"
+  rsvg-convert -w 40  "$startdir/art/spinner.svg"     -o "$t/spinner.png"
+
+  # The SUFUN logo as a normal icon ("sufun-logo"): launchers (SUFUN Update,
+  # System Update, Install SUFUN), the update password prompt, os-release LOGO.
+  # PNGs too, so small sizes don't depend on the SVG renderer.
+  local s n sizes=(16 22 24 32 48 64 128 256)
   install -Dm644 "$startdir/art/sufun-logo.svg" usr/share/icons/hicolor/scalable/apps/sufun-logo.svg
+  for s in "${sizes[@]}"; do
+    install -d "usr/share/icons/hicolor/${s}x${s}/apps"
+    rsvg-convert -w "$s" -h "$s" "$startdir/art/sufun-logo.svg" -o "usr/share/icons/hicolor/${s}x${s}/apps/sufun-logo.png"
+  done
+  # Settings > About this System (kcm-about-distrorc)
   install -d usr/share/pixmaps
-  rsvg-convert -w 256 "$startdir/art/sufun-logo.svg" -o usr/share/pixmaps/sufun-logo.png
+  rsvg-convert -w 256 -h 256 "$startdir/art/sufun-logo.svg" -o usr/share/pixmaps/sufun-logo.png
+  # Task View button (org.sufun.taskview): Fluent's "window-duplicate" glyph, two
+  # windows on top of each other (from Fluent-icon-theme, GPL-3.0; not a Microsoft icon).
+  install -Dm644 "$startdir/art/sufun-taskview.svg" usr/share/icons/hicolor/scalable/actions/sufun-taskview.svg
 
   # Icon theme "SUFUN" = Fluent + the SUFUN logo as the start button.
   # Fluent's start-here icons are the Windows logo (removed in sufun-fluent-icons).
   # Our own small theme sits on top of Fluent ("Inherits"), so Fluent updates can
   # never bring the Windows logo back: every start-here* name comes from here.
-  local s n names=(start-here start-here-kde start-here-kde-plasma
+  local names=(start-here start-here-kde start-here-kde-plasma
     start-here-symbolic start-here-kde-symbolic start-here-kde-plasma-symbolic)
-  local sizes=(16 22 24 32 48 64 96 128 256) dirs=()
+  local dirs=()
   for s in "${sizes[@]}"; do
     install -d "usr/share/icons/SUFUN/${s}x${s}/places"
-    rsvg-convert -w "$s" -h "$s" "$startdir/art/sufun-logo.svg" -o "usr/share/icons/SUFUN/${s}x${s}/places/start-here.png"
+    cp "usr/share/icons/hicolor/${s}x${s}/apps/sufun-logo.png" "usr/share/icons/SUFUN/${s}x${s}/places/start-here.png"
     for n in "${names[@]:1}"; do
       ln -s start-here.png "usr/share/icons/SUFUN/${s}x${s}/places/$n.png"
     done

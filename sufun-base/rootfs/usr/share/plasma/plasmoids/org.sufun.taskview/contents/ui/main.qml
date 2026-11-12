@@ -53,7 +53,10 @@ PlasmoidItem {
             anchors.centerIn: parent
             width: Math.round(Math.min(parent.width, parent.height) * 0.6)
             height: width
-            source: "multitasking-view"
+            // Two windows on top of each other = "show all windows" (Fluent's glyph,
+            // installed by sufun-base as a hicolor icon so it works with any icon theme).
+            // Fluent's "multitasking-view" looked like a network icon.
+            source: "sufun-taskview"
             fallback: "window-duplicate"
             active: button.containsMouse
         }

@@ -1,19 +1,31 @@
-// SUFUN boot screen. The text is a pre-rendered picture (sufun.png, made when the
-// package is built), so it looks the same everywhere and needs no fonts at boot.
+// SUFUN boot screen, on black, top to bottom: the SUFUN logo (logo.png, 120 px),
+// the word SUFUN in white (sufun.png), a small spinner (spinner.png).
+// All three are pre-rendered pictures (made when sufun-base is built), so they
+// look the same everywhere and no fonts are needed at boot.
 Window.SetBackgroundTopColor(0, 0, 0);
 Window.SetBackgroundBottomColor(0, 0, 0);
 
-logo = Image("sufun.png");
+logo = Image("logo.png");
+text = Image("sufun.png");
 spin = Image("spinner.png");
 cx = Window.GetX() + Window.GetWidth() / 2;
 cy = Window.GetY() + Window.GetHeight() / 2;
 
+gap = 24;
+// Logo and text together are centered on the screen; the spinner hangs below.
+top = cy - (logo.GetHeight() + gap + text.GetHeight()) / 2;
+
 logo_sprite = Sprite(logo);
 logo_sprite.SetX(cx - logo.GetWidth() / 2);
-logo_sprite.SetY(cy - logo.GetHeight() / 2);
+logo_sprite.SetY(top);
+
+text_y = top + logo.GetHeight() + gap;
+text_sprite = Sprite(text);
+text_sprite.SetX(cx - text.GetWidth() / 2);
+text_sprite.SetY(text_y);
 
 spin_sprite = Sprite();
-spin_y = cy + logo.GetHeight() / 2 + spin.GetHeight();
+spin_y = text_y + text.GetHeight() + 2 * gap + spin.GetHeight() / 2;   // center of the spinner
 angle = 0;
 
 fun refresh_callback() {

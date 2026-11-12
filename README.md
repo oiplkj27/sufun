@@ -44,17 +44,17 @@ scripts/                    sufun-key.sh, make-sufun-update.sh, check-aur-update
 
 Default for every new user, on the live USB and on the installed system (all in `sufun-base`). The wallpaper stays Plasma's default. Blur, transparency and rounded-corner window effects stay **off** (speed). No Microsoft logo, font or icon is shipped: the start button is the SUFUN logo, the font is Selawik, the icons are Fluent.
 
-**Taskbar** (left to right): `[space]` start button · **검색** box · Task View · Files, Firefox, Konsole, Settings `[space]` tray (`^`, 한/영, network, volume, battery) · clock. Running apps get the small line under their icon (Plasma's normal task indicator).
+**Taskbar** (left to right): `[space]` start button · **검색** box · Task View · Files, Firefox, Konsole, Settings `[space]` tray (`^` at its left end, then the visible icons) · clock. Running apps get the small line under their icon (Plasma's normal task indicator).
 
 | Part | How it is done | Why this way |
 |---|---|---|
-| Start button | Icon theme **"SUFUN"** (in `sufun-base`) = Fluent + the SUFUN logo for every `start-here*` name | Fluent's start icons are the Windows logo. Our theme sits *on top of* Fluent, so Fluent updates can't bring the Windows logo back. The Windows logo is also removed from `sufun-fluent-icons` (with Edge/Office/Teams/Skype/OneDrive logos, 59 files), and Fluent's Office file-type icons that copy the Word/Excel/PowerPoint/Outlook logos are removed too (.docx/.xlsx/.pptx files show Fluent's plain document/spreadsheet/presentation icons) and from the Plasma style (`icons/start.svgz`). |
+| Start button | The **SUFUN logo** (`sufun-base/art/sufun-logo.svg`: a flowing S in a sunset gradient with a small sun, original artwork). Icon theme **"SUFUN"** (in `sufun-base`) = Fluent + this logo for every `start-here*` name | Fluent's start icons are the Windows logo. Our theme sits *on top of* Fluent, so Fluent updates can't bring the Windows logo back. The Windows logo is also removed from `sufun-fluent-icons` (with Edge/Office/Teams/Skype/OneDrive logos, 59 files), and Fluent's Office file-type icons that copy the Word/Excel/PowerPoint/Outlook logos are removed too (.docx/.xlsx/.pptx files show Fluent's plain document/spreadsheet/presentation icons) and from the Plasma style (`icons/start.svgz`). |
 | 검색 box | Small SUFUN widget `org.sufun.search` → opens **KRunner** (apps, recent files, folders, settings, calculator) in the middle of the screen | Plasma has no search *field* for the panel. KRunner is Plasma's own search. File-content search is off (Baloo indexing uses too much CPU/RAM). |
-| Task View | Small SUFUN widget `org.sufun.taskview` → KWin **Overview** | Plasma 6.8 has no Overview button widget. |
+| Task View | Small SUFUN widget `org.sufun.taskview` → KWin **Overview**. Icon: two windows on top of each other (Fluent's `window-duplicate` glyph, installed as `sufun-taskview`) | Plasma 6.8 has no Overview button widget. Fluent's `multitasking-view` icon looked like a network icon. |
 | Clock | Small SUFUN widget `org.sufun.clock`: two lines, right-aligned, same size. Korean `오전 2:33` / English `2:33 AM`, below it `2026-11-12`. Click = Plasma's calendar | Plasma's Digital Clock always puts 오전/오후 *after* the time, draws the date smaller and centers both lines. |
 | Start menu | **Kickoff** (Plasma's own): pinned apps as a grid, user name + picture, power buttons. Pinned apps: `/etc/xdg/kicker-extra-favoritesrc`. Recent files: *Places → History* | See "Start menu: Kickoff, not Menu 11" below. |
 | Desktop icons | 휴지통, Firefox, Steam, LibreOffice Writer, 메모장, in columns from the top-left, 48 px, double-click to open | Made by `/usr/lib/sufun/first-login` in the user's desktop folder (`~/바탕화면` in Korean). The desktop sorts by date (oldest first), so this order stays and new files appear at the end, like Windows. |
-| Tray | Always visible: 한/영 (Fcitx5 shows text, not an icon), network, volume, battery. Behind `^`: Bluetooth, notifications, clipboard, brightness | Set by the layout script (Plasma 6.8 keeps them in the tray widget's own settings). Win+N is added by `first-login`: the notifications widget inside the tray only exists after Plasma starts, so at the first login the shell is stopped for ~2 s (it saves the tray when it quits), the shortcut is written, and it starts again. |
+| Tray | Always visible: 한/영 (Fcitx5 shows text, not an icon), network, volume, battery. Behind `^`: Bluetooth, notifications, clipboard, brightness | Set by the layout script (Plasma 6.8 keeps them in the tray widget's own settings). `^` is at the **left** end like Windows 11: Plasma has no option for only the arrow, so the tray's *reverse icon order* is on, which mirrors the whole tray (the visible icons are then listed right-to-left). Win+N is added by `first-login`: the notifications widget inside the tray only exists after Plasma starts, so at the first login the shell is stopped for ~2 s (it saves the tray when it quits), the shortcut is written, and it starts again. |
 | Alt+Tab | KWin **Thumbnail Grid**: live window previews | The only switcher with previews that comes with KWin itself (the others need `kdeplasma-addons`, +19 MB). |
 | Files (Dolphin) | Places pane on the left (Home, Desktop, Documents, Downloads, Pictures, ..., drives under *Devices*), address bar you can type into | Folder names follow the language (`xdg-user-dirs`): 바탕화면, 문서, 다운로드, 사진, ... |
 
@@ -84,7 +84,7 @@ Default for every new user, on the live USB and on the installed system (all in 
 |---|---|---|
 | plasma-systemmonitor | +3.0 MB | about 190 MB, only while open (0 when closed) |
 | 3 SUFUN widgets (search, Task View, clock) | ~15 KB | a few MB inside the Plasma shell (small QML; the calendar loads only when you open it) |
-| SUFUN icon theme (PNG start logo, 9 sizes) | ~0.2 MB | – |
+| SUFUN logo (start button theme + `sufun-logo` icon, 8 PNG sizes each, boot-screen PNGs) | ~0.3 MB | – |
 | Removed Microsoft/Windows logos | −59 icon files, plus the Office-logo file-type icons | – |
 | Desktop icons (5 shortcuts) | a few KB | the desktop was already a Folder View; a few MB for 5 icons |
 | Alt+Tab thumbnails, Overview, KRunner | 0 (part of KWin/Plasma) | only while open |
@@ -131,7 +131,7 @@ Files that another package also owns can't simply be put in a package. They are 
 | `/etc/lsb-release` | lsb-release | Same hook |
 | `/etc/ufw/ufw.conf`, `/etc/default/ufw` | ufw | Installer changes single values |
 | sysctl, udev, modprobe, journald, coredump, logind, zram, tmpfiles, service drop-ins | — | Packaged in `/usr/lib/...` (the place for packages); your own changes in `/etc/...` still win |
-| SDDM Wayland setting | — | `/usr/lib/sddm/sddm.conf.d/50-sufun.conf`, so System Settings can still write `/etc/sddm.conf.d/kde_settings.conf` |
+| SDDM settings (Breeze, Wayland, on-screen keyboard) | — | `/etc/sddm.conf.d/10-sufun.conf`. **Not** `/usr/lib/sddm/sddm.conf.d/`: Arch's `sddm` puts a `default.conf` there that lists every setting with its default and is read after our file, so it undid it (fallback login screen on X11). System Settings writes `/etc/sddm.conf.d/kde_settings.conf`, which is read after ours, so your choices there still win |
 | `/etc/xdg/*` KDE defaults, Firefox policy, fonts, Fcitx5 | not owned | Packaged directly; listed in `backup=()` so your edits survive updates |
 | FeatherPad and Steam launchers | featherpad, steam | Same-named files in `/usr/local/share/applications`, which is searched first |
 
@@ -273,7 +273,8 @@ If something fails, send me: what you did, what happened, and the output of
 ### Password, lock screen and tablet keyboard (item 20)
 - The password stays required at boot (SDDM) and on the lock screen.
 - *System Settings → Users* (change password, account picture) works: `accountsservice` is installed.
-- *System Settings → Login Screen (SDDM)* → auto-login works: it writes `/etc/sddm.conf.d/kde_settings.conf`, and SUFUN's own SDDM settings are in `/usr/lib/sddm/...`, so they don't clash.
+- *System Settings → Login Screen (SDDM)* → auto-login works: it writes `/etc/sddm.conf.d/kde_settings.conf`, which is read after SUFUN's `/etc/sddm.conf.d/10-sufun.conf`, so your choices win.
+- **Login screen = Breeze**, close to the Windows 11 sign-in screen: user picture and password field in the middle, big clock with the date, on-screen keyboard button (bottom left) for tablet use, power buttons. The session and keyboard-layout buttons appear only if there is more than one session or layout. It runs on Wayland (KWin) and starts Plasma's on-screen keyboard. Within Breeze's options the clock shows the Korean format `오전 6:56`, but the date is Qt's long Korean date (`2026년 11월 12일 목요일`): Breeze has no setting for `2026-11-12`, and changing it would mean keeping our own copy of the Breeze theme (which breaks when Plasma updates).
 - **The keyboard problem, fixed:** KWin can run only **one** input method, and Fcitx5 has no on-screen keyboard. With Fcitx5 always on, the lock screen in tablet mode had no keyboard to type the password.
   **Fix:** a small user service `sufun-input-switch` (`/usr/lib/sufun/input-switch`) listens to KWin's tablet-mode signal (D-Bus `org.kde.KWin.TabletModeManager`):
   - Type Cover attached → **Fcitx5** (Korean/English)
@@ -289,7 +290,7 @@ If something fails, send me: what you did, what happened, and the output of
 
 ### New name: SUFUN, and the boot screen (item 21)
 - Renamed everywhere you can see it: ISO name `sufun-<version>-x86_64.iso`, label `SUFUN_YYYYMM`, live boot menus (GRUB, systemd-boot, syslinux: "SUFUN live USB / installer"), installed boot entry "SUFUN", installer "Install SUFUN / SUFUN 설치", default computer name `sufun`, live user `sufun`. Internal names too: `org.sufun.desktop` (global theme), `sufun-install`, `sufun-wine`, `sufun-fluent-theme`, `sufun-fluent-icons`, local repo `sufun-local`. SUFUN is still made only for the Surface Go 3.
-- **Boot screen (Plymouth)**: black background, **"SUFUN"** in the middle (white, Selawik semibold), small spinner below. The text and the spinner are **pre-rendered to PNG when sufun-base is built** (`rsvg-convert` from `sufun-base/art/*.svg`), so no fonts are needed at boot.
+- **Boot screen (Plymouth)**: black background, the **SUFUN logo** (120 px) in the middle, **"SUFUN"** below it (white, Selawik semibold), small spinner below that. The logo, the text and the spinner are **pre-rendered to PNG when sufun-base is built** (`rsvg-convert` from `sufun-base/art/*.svg`), so no fonts are needed at boot.
   - Initramfs: `/etc/mkinitcpio.conf.d/10-sufun.conf` = Arch's systemd-based list with `plymouth` right after `systemd` (the Arch wiki requires that order). Kernel options get `splash`.
   - Hand-over to the login screen: `sddm.service` drop-in quits Plymouth with `--retain-splash` (the last picture stays on screen until SDDM draws), the same idea GDM uses. That avoids the black text console in between. A short flicker is still possible with SDDM.
   - **Installed system only.** On the live USB, Plymouth with archiso's (non-systemd) boot hooks has no reliable, confirmed setup, so the live USB keeps text boot. I'd rather not risk the installer USB not starting.
@@ -300,7 +301,7 @@ If something fails, send me: what you did, what happened, and the output of
 - `VERSION` (1.0) → sufun-base writes `/usr/share/sufun/os-release`: `NAME="SUFUN"`, `PRETTY_NAME="SUFUN 1.0"`, `VERSION`, `VERSION_ID`, `BUILD_ID` (build date), `ID=sufun`, `ID_LIKE=arch`, `HOME_URL` (your GitHub repo, taken from the workflow).
 - **ID=sufun is safe:** pacman, the linux-surface repo, Wine, Steam, Flatpak and Firefox don't look at os-release to decide anything. KDE only shows the name. Tools that don't know "sufun" fall back to `ID_LIKE=arch` (fastfetch then shows the Arch logo). Only rare scripts that check exactly `ID=arch` could complain.
 - **Keeping it after updates:** `/usr/lib/os-release` belongs to Arch's `filesystem` package, so an update would bring back "Arch Linux". The pacman hook `95-sufun-os-release.hook` copies ours back right after every `filesystem` update. `/etc/os-release` is a link to it. Why a hook and not `NoUpgrade`/`NoExtract` in pacman.conf: `NoUpgrade` only writes a `.pacnew` file, and both need changes in `/etc/pacman.conf` that a user might undo. The hook is what CachyOS and EndeavourOS use.
-- `/etc/xdg/kcm-about-distrorc`: name SUFUN, SUFUN logo, website, variant "Surface Go 3".
+- `/etc/xdg/kcm-about-distrorc`: name SUFUN, SUFUN logo (`/usr/share/pixmaps/sufun-logo.png`), website, variant "Surface Go 3". The same logo is the icon of *SUFUN Update*, *System Update* and *Install SUFUN* (live USB).
 
 ### Steam (item 28) — see the Korean section "Steam 안내" below
 - `[multilib]` is enabled for the ISO build and on the installed system.
@@ -448,13 +449,13 @@ SUFUN은 디스크를 암호화하지 않습니다. 대신 **Surface UEFI 암호
 ## Automatic boot and install test (item 25)
 
 Every build (test builds and releases) is boot-tested in a virtual machine (QEMU + UEFI firmware), like KDE Linux does:
-1. **Live USB** boots to the Plasma desktop and checks the Windows 11-style layout (start menu, search box, Task View, clock, tray, Win+A/Win+N, desktop icons, SUFUN start logo, no Microsoft logos) and prints RAM numbers (`INFO ram ...`).
+1. **Live USB** boots to the Plasma desktop and checks the Windows 11-style layout (start menu, search box, Task View, clock, tray with `^` on the left, Win+A/Win+N, desktop icons, SUFUN logo icons, no Microsoft logos) and prints RAM numbers (`INFO ram ...`).
 2. **Installer** runs in a test-only automatic mode and installs to an empty 64 GB virtual disk. This mode runs only when **all three** are true: `SUFUN_AUTO=1`, the kernel option `sufun.test=install`, and the computer is a QEMU VM. So it can never start on your Surface.
-3. **Installed system** boots from the virtual disk and checks itself: SUFUN boot entry, `splash` and the Plymouth theme in the initramfs, login screen shown, `sufun-base` version = `VERSION`, zram, earlyoom and firewall active, no `subvolid` in fstab, Timeshift config, os-release. After the login-screen screenshot it logs the test user in automatically (**test disk only**: the autologin file is written by the test itself, a real install never has it) and checks the **Korean** desktop: Korean folder names (바탕화면, 문서, 다운로드), taskbar, tray, desktop icons.
+3. **Installed system** boots from the virtual disk and checks itself: SUFUN boot entry, `splash` and the Plymouth theme (logo + text) in the initramfs, login screen shown **with the Breeze theme on Wayland** (the greeter was started with `--theme /usr/share/sddm/themes/breeze` and never logged "Fallback to embedded theme"; its log lines are copied to the serial log), `sufun-base` version = `VERSION`, zram, earlyoom and firewall active, no `subvolid` in fstab, Timeshift config, os-release. After the login-screen screenshot it logs the test user in automatically (**test disk only**: the autologin file is written by the test itself, a real install never has it) and checks the **Korean** desktop: Korean folder names (바탕화면, 문서, 다운로드), taskbar, tray, desktop icons.
 
 Only in test mode, the installed system's boot options also get `plymouth.ignore-serial-consoles` (with the test's serial console, Plymouth would show text instead of the SUFUN splash). A real install's boot options are unchanged.
 
-Results come from the virtual serial port, not from fixed waiting times. Screenshots and serial logs are uploaded as the **sufun-test-results** artifact. Screenshots are taken every 10 seconds for the first 3 minutes of each virtual PC, then every minute; the file name tells the time since power-on, e.g. `3-installed-t0040.png` = 40 s. KVM is used when the runner has it, otherwise slow software emulation with 4× longer time limits. **Releases are only signed if all tests pass.**
+Results come from the virtual serial port, not from fixed waiting times. Screenshots and serial logs are uploaded as the **sufun-test-results** artifact. Screenshots are taken every 10 seconds for the first 3 minutes of each virtual PC, then every minute; the installed system also gets one about every 2 seconds for its first 20 seconds, to catch the boot splash; the file name tells the time since power-on, e.g. `3-installed-t0040.png` = 40 s. KVM is used when the runner has it, otherwise slow software emulation with 4× longer time limits. **Releases are only signed if all tests pass.**
 
 > The VM has no Surface hardware. **Touch, pen, cameras, Type Cover, lid, rotation and sleep must still be tested on the real device**: see the first-boot checklists in the camera, Korean input, lid and keyboard sections above.
 
@@ -531,3 +532,4 @@ The ISO is built and boot-tested in GitHub Actions (virtual machine), but not ye
 - The Plasma layout script and theme names (if wrong, Plasma falls back to the normal KDE look; nothing breaks).
 - The first CI boot tests themselves (timeouts, the login-screen detection).
 - Plymouth → SDDM hand-over (`--retain-splash`); if the login screen doesn't appear, delete `/usr/lib/systemd/system/sddm.service.d/50-sufun-plymouth.conf`.
+- Login screen on Wayland (KWin) with Plasma's on-screen keyboard: tested in the VM only. If the login screen stays black on the Surface, switch to a text console (Ctrl+Alt+F3), log in, and create `/etc/sddm.conf.d/20-x11.conf` with `[General]` / `DisplayServer=x11`, then reboot (the Breeze theme stays).
