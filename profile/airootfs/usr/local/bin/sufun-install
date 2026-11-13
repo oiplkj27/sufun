@@ -402,7 +402,15 @@ bold "패키지를 내려받아 설치하는 중 (10-30분, SD카드는 더 걸�
 # sufun-base pulls in the whole desktop. The desktop list is also given directly,
 # so the explicit driver choices (vulkan-intel, lib32-mesa...) are used by pacman.
 mapfile -t PKGS < <(sed -e 's/#.*//' -e 's/[[:space:]]//g' -e '/^$/d' "$SHARE/install.txt" "$SHARE/desktop.txt")
-pacstrap -C "$INSTALL_CONF" /mnt "${PKGS[@]}" sufun-base   # host keyring (with surface key) is copied in
+# A slow microSD card can stall a download for more than pacman's 10 seconds while
+# the card is busy writing: no download timeout on SD installs. A failed download
+# (network hiccup) is tried once more; files already downloaded are kept.
+PACSTRAP_OPTS=()
+[[ $MODE == sd ]] && PACSTRAP_OPTS=(--disable-download-timeout)
+# (the host keyring with the linux-surface key is copied in)
+pacstrap -C "$INSTALL_CONF" /mnt "${PKGS[@]}" sufun-base "${PACSTRAP_OPTS[@]}" \
+  || { warn "다운로드가 실패했습니다. 한 번 더 시도합니다..."; sleep 10
+       pacstrap -C "$INSTALL_CONF" /mnt "${PKGS[@]}" sufun-base "${PACSTRAP_OPTS[@]}"; }
 cp "$TARGET_CONF" /mnt/etc/pacman.conf
 
 # fstab: genfstab writes "subvolid=..."; after a Timeshift restore "@" gets a NEW

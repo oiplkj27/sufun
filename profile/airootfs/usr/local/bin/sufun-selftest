@@ -14,6 +14,18 @@
 MODE=$(sed -n 's/.*sufun\.test=\([a-z]*\).*/\1/p' /proc/cmdline)
 [[ -n $MODE ]] || exit 0
 say() { echo "SUFUN-TEST: $*" > /dev/ttyS0; echo "SUFUN-TEST: $*"; }
+# The serial login prompt (agetty) hangs up /dev/ttyS0 when it starts; a program
+# still writing to the old ttyS0 then gets write errors and stops. So: wait for
+# it, and reopen ttyS0 for every output line (like say()).
+wait_serial_getty() {
+  local i
+  for ((i = 0; i < 120; i += 2)); do systemctl is-active -q serial-getty@ttyS0.service && break; sleep 2; done
+  sleep 3
+}
+to_serial() {  # to_serial <command...>: run it, output line by line to ttyS0; returns its exit code
+  "$@" 2>&1 | while IFS= read -r l; do printf '%s\n' "$l" > /dev/ttyS0 2>/dev/null || true; done
+  return "${PIPESTATUS[0]}"
+}
 check() {  # check <name> <command...>
   local name=$1; shift
   if "$@" >/dev/null 2>&1; then say "PASS $name"; else say "FAIL $name"; fi
@@ -205,7 +217,7 @@ restore_prepare() {
   say "INFO restore test with $iso, SUFUN root $root ($(part_sectors "$root") sectors)"
   first_before=$(efibootmgr | sed -n 's/^BootOrder: \([0-9A-Fa-f]*\).*/\1/p')
   check restore-not-prepared bash -c '! sufun-windows-restore --status'
-  if SUFUN_WIM_SPLIT_MB=16 sufun-windows-restore --prepare "$iso" --yes > /dev/ttyS0 2>&1; then
+  if to_serial env SUFUN_WIM_SPLIT_MB=16 sufun-windows-restore --prepare "$iso" --yes; then
     say "PASS restore-prepare"
   else
     say "FAIL restore-prepare"; return 0
@@ -228,7 +240,7 @@ restore_prepare() {
   check restore-default-kept  test "$first_before" = "$first_after"
   check restore-status        sufun-windows-restore --status
   # Like the window's "지금 Windows 설치 시작" button, but without rebooting now
-  sufun-windows-restore --reboot-to-setup > /dev/ttyS0 2>&1
+  to_serial sufun-windows-restore --reboot-to-setup
   check restore-bootnext      bash -c 'efibootmgr | grep -qi "^BootNext: $1"' _ "$num"
   mkdir -p "${PHASE%/*}"; echo cleanup > "$PHASE"
   say "RESTORE-PREPARED"
@@ -239,7 +251,7 @@ restore_cleanup() {
   old=$(sed -n 's/^OLD_ROOT_SECTORS=//p' /var/lib/sufun/windows-restore.conf)
   say "BOOTED restore-cleanup"
   check restore-bootnext-used bash -c '! efibootmgr | grep -q "^BootNext"'
-  if sufun-windows-restore --remove --yes > /dev/ttyS0 2>&1; then say "PASS restore-remove"; else say "FAIL restore-remove"; fi
+  if to_serial sufun-windows-restore --remove --yes; then say "PASS restore-remove"; else say "FAIL restore-remove"; fi
   check cleanup-partition-gone bash -c '! lsblk -no LABEL | grep -qx WININSTALL'
   check cleanup-entry-gone     bash -c '! efibootmgr | grep -q "Windows Setup"'
   check cleanup-root-size      bash -c '(( $(cat /sys/class/block/${1#/dev/}/size) >= $2 ))' _ "$root" "${old:-0}"
@@ -282,9 +294,10 @@ case "$MODE" in
     say "BOOTED $MODE"
     [[ $MODE == sdinstall ]] && imode=sd || imode=emmc
     wait_for 600 nm-online -q -t 5
-    if SUFUN_AUTO=1 SUFUN_MODE=$imode SUFUN_HOST=sufun SUFUN_USER=tester \
+    wait_serial_getty
+    if to_serial env SUFUN_AUTO=1 SUFUN_MODE=$imode SUFUN_HOST=sufun SUFUN_USER=tester \
        SUFUN_PASS=sufun-test SUFUN_TZ=Asia/Seoul SUFUN_LANG=2 \
-       /usr/local/bin/sufun-install > /dev/ttyS0 2>&1; then
+       /usr/local/bin/sufun-install; then
       say "INSTALL-DONE"
     else
       say "INSTALL-FAILED"
