@@ -30,7 +30,8 @@ die() { printf '\e[1;31m==> ERROR: %s\e[0m\n' "$*" >&2; exit 1; }
 strip_list() { sed -e 's/#.*//' -e 's/[[:space:]]//g' -e '/^$/d' "$@"; }
 
 [[ $EUID -eq 0 ]] || { echo "build.sh must run as root" >&2; exit 1; }
-pacman -Sy --needed --noconfirm archiso curl
+# mkinitcpio: lsinitcpio, to check the live initramfs at the end
+pacman -Sy --needed --noconfirm archiso curl mkinitcpio
 
 rm -rf "$WORK"
 mkdir -p "$WORK" "$OUT"
