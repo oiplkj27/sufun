@@ -8,6 +8,9 @@
 #   sufun.test=installed  installed system: check it, show the login screen, then
 #                         log in automatically (test only) to check the Korean
 #                         desktop, report results, power off
+#   sufun.test=sdinstall  live system on the microSD card: "SD카드에 설치" automatically
+#   sufun.test=winsetup   started from the Windows restore test partition: report, power off
+#   (installed, 2nd start with /var/lib/sufun-test/restore-phase: Windows restore cleanup test)
 MODE=$(sed -n 's/.*sufun\.test=\([a-z]*\).*/\1/p' /proc/cmdline)
 [[ -n $MODE ]] || exit 0
 say() { echo "SUFUN-TEST: $*" > /dev/ttyS0; echo "SUFUN-TEST: $*"; }
@@ -151,9 +154,116 @@ diagnose() {
     | while IFS= read -r line; do say "LOG $line"; done
 }
 
+# --- microSD install (SUFUN on the card, boot stage on the internal disk) ---
+sd_checks() {
+  local root rdisk efisrc
+  root=$(findmnt -no SOURCE / | sed 's/\[.*//')
+  rdisk=$(lsblk -no PKNAME "$root" | head -n1)
+  efisrc=$(findmnt -no SOURCE /efi 2>/dev/null)
+  say "INFO root on $root, boot stage $efisrc"
+  check sd-root-on-card     bash -c '[[ $1 == mmcblk* && $(cat /sys/block/$1/device/type) == SD ]]' _ "$rdisk"
+  check sd-boot-stage-internal bash -c '[[ -n $1 && $(lsblk -no PKNAME "$1") != mmcblk* ]]' _ "$efisrc"
+  check sd-boot-entry       grep -q '^title *SUFUN (microSD)$' /efi/loader/entries/sufun-sd.conf
+  check sd-boot-default     grep -qx 'default sufun-sd.conf' /efi/loader/loader.conf
+  check sd-live-entry-kept  test -f /efi/loader/entries/sufun-live.conf
+  check sd-live-files-kept  bash -c 'p=$(lsblk -pnlo NAME,TYPE /dev/$1 | awk "\$2==\"part\"{print \$1; exit}"); m=$(mktemp -d); mount -o ro "$p" "$m" && test -f "$m/arch/x86_64/airootfs.sfs"; r=$?; umount "$m"; exit $r' _ "$rdisk"
+  check sd-no-bootctl       bash -c '! efibootmgr | grep -q "Linux Boot Manager"'
+  check sd-modules-conf     grep -q rtsx_pci_sdmmc /etc/mkinitcpio.conf.d/20-sufun-sd.conf
+  check sd-initramfs-rtsx   bash -c 'lsinitcpio /boot/initramfs-linux-surface.img | grep -q rtsx_pci_sdmmc'
+  in_sync() { cmp -s /boot/vmlinuz-linux-surface /efi/EFI/SUFUN/sd/vmlinuz-linux-surface \
+           && cmp -s /boot/initramfs-linux-surface.img /efi/EFI/SUFUN/sd/initramfs-linux-surface.img; }
+  check sd-boot-stage-in-sync in_sync
+  # "mkinitcpio -P" by hand: the post hook copies the new initramfs
+  echo broken > /efi/EFI/SUFUN/sd/initramfs-linux-surface.img
+  mkinitcpio -P >/dev/null 2>&1
+  check sd-sync-after-mkinitcpio in_sync
+  # Kernel update (reinstall from the package cache): the pacman hook copies it
+  echo broken > /efi/EFI/SUFUN/sd/vmlinuz-linux-surface
+  local pkg; pkg=$(ls /var/cache/pacman/pkg/linux-surface-[0-9]*.pkg.tar.zst 2>/dev/null | tail -n1)
+  say "INFO kernel package: ${pkg:-none}"
+  if [[ -n $pkg ]]; then
+    pacman -U --noconfirm "$pkg" >/dev/null 2>&1
+    check sd-sync-after-kernel-update in_sync
+  else
+    say "FAIL sd-sync-after-kernel-update (no linux-surface package in the cache)"
+  fi
+}
+
+# --- Windows restore test (no Microsoft files: a dummy ISO with the same layout) ---
+#  phase 1 (installed system, this boot): prepare partition + "Windows Setup" entry,
+#           BootNext = that entry, power off
+#  phase 2 (next start, sufun.test=winsetup): the firmware started the dummy ISO's
+#           boot file from the WININSTALL partition -> WINSETUP-BOOT-OK
+#  phase 3 (start after that, installed system): --remove, everything back
+PHASE=/var/lib/sufun-test/restore-phase
+part_sectors() { cat "/sys/class/block/${1#/dev/}/size"; }
+restore_prepare() {
+  local iso root num first_before first_after
+  iso=$(lsblk -pnro NAME,LABEL | awk '$2 == "SUFUN_WINTEST" {print $1; exit}')
+  [[ -n $iso ]] || return 0
+  root=$(findmnt -no SOURCE / | sed 's/\[.*//')
+  say "INFO restore test with $iso, SUFUN root $root ($(part_sectors "$root") sectors)"
+  first_before=$(efibootmgr | sed -n 's/^BootOrder: \([0-9A-Fa-f]*\).*/\1/p')
+  check restore-not-prepared bash -c '! sufun-windows-restore --status'
+  if SUFUN_WIM_SPLIT_MB=16 sufun-windows-restore --prepare "$iso" --yes > /dev/ttyS0 2>&1; then
+    say "PASS restore-prepare"
+  else
+    say "FAIL restore-prepare"; return 0
+  fi
+  local part; part=$(lsblk -pnro NAME,LABEL | awk '$2 == "WININSTALL" {print $1; exit}')
+  num=$(sed -n 's/^BOOTNUM=//p' /var/lib/sufun/windows-restore.conf)
+  first_after=$(efibootmgr | sed -n 's/^BootOrder: \([0-9A-Fa-f]*\).*/\1/p')
+  say "INFO WININSTALL=$part entry=Boot$num, order: $(efibootmgr | sed -n 's/^BootOrder: //p')"
+  check restore-partition     test -b "$part"
+  check restore-same-disk     bash -c '[[ $(lsblk -no PKNAME "$1") == $(lsblk -no PKNAME "$2") ]]' _ "$part" "$root"
+  check restore-root-shrunk   bash -c '(( $(cat /sys/class/block/${1#/dev/}/size) < $2 ))' _ "$root" "$(grep -o '^OLD_ROOT_SECTORS=.*' /var/lib/sufun/windows-restore.conf | cut -d= -f2)"
+  check restore-fat32         bash -c '[[ $(lsblk -no FSTYPE "$1") == vfat ]]' _ "$part"
+  local m; m=$(mktemp -d); mount -o ro "$part" "$m"
+  check restore-boot-file     test -f "$m/efi/boot/bootx64.efi" -a -f "$m/efi/microsoft/boot/bcd" -a -f "$m/sources/boot.wim"
+  check restore-wim-split     bash -c 'ls "$1"/sources/install*.swm | wc -l | grep -qv "^[01]$" && ! test -e "$1/sources/install.wim"' _ "$m"
+  say "INFO split parts: $(ls "$m"/sources/ | tr '\n' ' ')"
+  umount "$m"; rmdir "$m"
+  check restore-entry         bash -c 'efibootmgr | grep -q "^Boot$1\*\? Windows Setup"' _ "$num"
+  check restore-entry-last    bash -c 'efibootmgr | sed -n "s/^BootOrder: //p" | grep -qiE "(^|,)$1\$"' _ "$num"
+  check restore-default-kept  test "$first_before" = "$first_after"
+  check restore-status        sufun-windows-restore --status
+  # Like the window's "지금 Windows 설치 시작" button, but without rebooting now
+  sufun-windows-restore --reboot-to-setup > /dev/ttyS0 2>&1
+  check restore-bootnext      bash -c 'efibootmgr | grep -qi "^BootNext: $1"' _ "$num"
+  mkdir -p "${PHASE%/*}"; echo cleanup > "$PHASE"
+  say "RESTORE-PREPARED"
+}
+restore_cleanup() {
+  local root old
+  root=$(findmnt -no SOURCE / | sed 's/\[.*//')
+  old=$(sed -n 's/^OLD_ROOT_SECTORS=//p' /var/lib/sufun/windows-restore.conf)
+  say "BOOTED restore-cleanup"
+  check restore-bootnext-used bash -c '! efibootmgr | grep -q "^BootNext"'
+  if sufun-windows-restore --remove --yes > /dev/ttyS0 2>&1; then say "PASS restore-remove"; else say "FAIL restore-remove"; fi
+  check cleanup-partition-gone bash -c '! lsblk -no LABEL | grep -qx WININSTALL'
+  check cleanup-entry-gone     bash -c '! efibootmgr | grep -q "Windows Setup"'
+  check cleanup-root-size      bash -c '(( $(cat /sys/class/block/${1#/dev/}/size) >= $2 ))' _ "$root" "${old:-0}"
+  check cleanup-btrfs-grown    bash -c 'dev=$(btrfs filesystem show --raw / | awk "/devid/ {print \$4; exit}"); part=$(( $(cat /sys/class/block/${1#/dev/}/size) * 512 )); (( part - dev < 64*1024*1024 ))' _ "$root"
+  check cleanup-state-gone     bash -c '! sufun-windows-restore --status'
+  say "INFO root now $(part_sectors "$root") sectors (before: $old)"
+  rm -f "$PHASE"
+  say "RESTORE-CLEANUP-DONE"
+}
+
 case "$MODE" in
+  winsetup)
+    # Started by the firmware entry "Windows Setup" (BootNext) from the WININSTALL
+    # partition: only that partition's loader entry has this kernel option.
+    say "WINSETUP-BOOT-OK"
+    sleep 3; systemctl poweroff
+    ;;
   live)
     say "BOOTED live"
+    src=$(findmnt -no SOURCE /run/archiso/bootmnt 2>/dev/null)
+    say "INFO live medium: ${src:-?}"
+    if [[ $src == /dev/mmcblk* ]] && [[ $(cat "/sys/block/$(lsblk -no PKNAME "$src")/device/type" 2>/dev/null) == SD ]]; then
+      say "PASS live-from-sd"
+    fi
     if wait_for 1200 desktop_up sufun; then
       wait_for 240 first_login_done sufun
       sleep 30      # screenshots of the finished desktop
@@ -165,10 +275,14 @@ case "$MODE" in
       say "LIVE-DESKTOP-TIMEOUT"
     fi
     ;;
-  install)
-    say "BOOTED install"
+  install|sdinstall)
+    # install:   "내부 저장장치에 설치" (no disk given: the installer must pick the
+    #            internal disk itself, not the SD card the test also attaches)
+    # sdinstall: "SD카드에 설치" (live system runs from the card)
+    say "BOOTED $MODE"
+    [[ $MODE == sdinstall ]] && imode=sd || imode=emmc
     wait_for 600 nm-online -q -t 5
-    if SUFUN_AUTO=1 SUFUN_DISK=/dev/vda SUFUN_HOST=sufun SUFUN_USER=tester \
+    if SUFUN_AUTO=1 SUFUN_MODE=$imode SUFUN_HOST=sufun SUFUN_USER=tester \
        SUFUN_PASS=sufun-test SUFUN_TZ=Asia/Seoul SUFUN_LANG=2 \
        /usr/local/bin/sufun-install > /dev/ttyS0 2>&1; then
       say "INSTALL-DONE"
@@ -178,9 +292,17 @@ case "$MODE" in
     sleep 5; systemctl poweroff
     ;;
   installed)
+    if [[ $(cat "$PHASE" 2>/dev/null) == cleanup ]]; then
+      restore_cleanup; sleep 3; systemctl poweroff; exit 0
+    fi
     say "BOOTED installed"
     say "VERSION $(pacman -Q sufun-base | awk '{print $2}' | sed 's/-[0-9]*$//')"
-    check boot-entry-sufun   grep -q '^title *SUFUN$' /boot/loader/entries/sufun.conf
+    if [[ -f /etc/sufun/boot-stage.conf ]]; then
+      sd_checks
+    else
+      check boot-entry-sufun   grep -q '^title *SUFUN$' /boot/loader/entries/sufun.conf
+      check emmc-root-internal bash -c 'r=$(findmnt -no SOURCE / | sed "s/\[.*//"); [[ $r == /dev/vda* ]]'
+    fi
     check splash-option      grep -qw splash /proc/cmdline
     check plymouth-theme     bash -c '[[ $(plymouth-set-default-theme) == sufun ]]'
     check plymouth-initramfs bash -c 'lsinitcpio /boot/initramfs-linux-surface.img | grep -q "plymouth/themes/sufun/sufun.png"'
@@ -211,6 +333,8 @@ case "$MODE" in
     else
       say "FAIL desktop-login"
     fi
+    # eMMC test only: the Windows restore test (needs the dummy ISO attached)
+    [[ -f /etc/sufun/boot-stage.conf ]] || restore_prepare
     say "INSTALLED-DONE"
     systemctl poweroff
     ;;

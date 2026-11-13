@@ -72,6 +72,9 @@ jobs:
       - name: Add ISO (split into parts if it is 2 GiB or larger)
         run: bash scripts/ci/add-iso-to-release.sh iso dist
 
+      - name: Add the Windows microSD setup script (covered by the signed SHA256SUMS)
+        run: cp scripts/windows/sufun-sd-setup.ps1 dist/
+
       - name: SHA256SUMS (signed)
         env:
           SUFUN_SIGNING_PASSPHRASE: ${{ secrets.SUFUN_SIGNING_PASSPHRASE }}

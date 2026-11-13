@@ -32,7 +32,7 @@ package() {
   # Files come from Windows/git without reliable permissions: set them here.
   find . -type d -exec chmod 755 {} +
   find . -type f -exec chmod 644 {} +
-  chmod 755 usr/bin/* usr/lib/sufun/*
+  chmod 755 usr/bin/* usr/lib/sufun/* usr/lib/initcpio/post/*
 
   # Version information (Settings > About this System, fastfetch, ...)
   local build_id; build_id=$(date -u --date="@${SOURCE_DATE_EPOCH:-$(date +%s)}" +%Y-%m-%d)

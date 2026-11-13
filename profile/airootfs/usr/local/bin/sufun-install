@@ -1,13 +1,26 @@
 #!/usr/bin/env bash
 # SUFUN installer (SUFUN = Arch Linux made for the Microsoft Surface Go 3).
-# Run from the live session (needs internet).
-# WARNING: erases the whole target disk (including Windows).
+# Run from the live session (needs internet). Two ways to install:
+#
+#   1) SD카드에 설치 (윈도우 유지)
+#      The system (btrfs root) goes on the microSD card, into the free space
+#      after the live partition. Windows stays. The Surface firmware cannot start
+#      anything from the card, so the kernel + initramfs are kept in the small
+#      SUFUN "boot stage" on the internal disk (made on Windows by
+#      sufun-sd-setup.ps1); /usr/lib/sufun/sync-boot-stage keeps it up to date.
+#      On the internal disk only EFI/SUFUN/ and the SUFUN loader entries are written.
+#   2) 내부 저장장치에 설치 (윈도우 삭제)
+#      WARNING: erases the whole internal disk (Windows included).
+#
+# Safety: the disk the live system runs from is never erased; a microSD card is
+# never offered for mode 2 and the internal disk never for mode 1; every target
+# is shown with model and size and needs a typed confirmation.
 #
 # Automatic test mode (CI only): all answers come from environment variables
-# (SUFUN_DISK, SUFUN_HOST, SUFUN_USER, SUFUN_PASS, SUFUN_TZ, SUFUN_LANG).
-# It runs ONLY when all three are true, so it can never start by accident on a
-# real Surface: SUFUN_AUTO=1, the kernel option "sufun.test=install", and the
-# computer is a QEMU virtual machine.
+# (SUFUN_MODE=sd|emmc, SUFUN_DISK (optional), SUFUN_HOST, SUFUN_USER, SUFUN_PASS,
+# SUFUN_TZ, SUFUN_LANG). It runs ONLY when all three are true, so it can never
+# start by accident on a real Surface: SUFUN_AUTO=1, the kernel option
+# "sufun.test=install" or "sufun.test=sdinstall", and the computer is a QEMU VM.
 set -euo pipefail
 
 [[ $EUID -eq 0 ]] || exec sudo "$0" "$@"
@@ -16,10 +29,12 @@ SHARE=/usr/share/sufun-iso
 SURFACE_KEY=56C464BAAC421453
 # btrfs options: noatime = don't write on every file read; zstd:1 = fast compression
 BTRFS_OPTS=noatime,compress=zstd:1
+MIN_ROOT_GIB=10      # smallest SUFUN root partition on the card (system ≈ 5 GB + backups)
+SLOW_KBS=2000        # 4K random writes slower than this (≈ 2 MB/s): warn
 
 AUTO=0
 if [[ ${SUFUN_AUTO:-0} == 1 ]]; then
-  if grep -qw 'sufun.test=install' /proc/cmdline \
+  if grep -qwE 'sufun\.test=(install|sdinstall)' /proc/cmdline \
      && [[ $(cat /sys/class/dmi/id/sys_vendor 2>/dev/null) == QEMU ]]; then
     AUTO=1
   else
@@ -29,89 +44,348 @@ if [[ ${SUFUN_AUTO:-0} == 1 ]]; then
 fi
 
 bold() { printf '\e[1m%s\e[0m\n' "$*"; }
+warn() { printf '\e[1;33m%s\e[0m\n' "$*"; }
 die()  {
-  printf '\e[1;31mError: %s\e[0m\n' "$*" >&2
-  (( AUTO )) || read -rp "Press Enter to close..."
+  printf '\e[1;31m오류: %s\e[0m\n' "$*" >&2
+  (( AUTO )) || read -rp "Enter를 누르면 닫힙니다..."
   exit 1
 }
-trap 'die "installation failed on line $LINENO"' ERR
+trap 'die "설치 중 오류가 났습니다 (줄 $LINENO)"' ERR
 ask() {  # ask <NAME> <prompt> <default> -> answer in $ANS_<NAME>
         # (in test mode the answer comes from $SUFUN_<NAME>)
   local name=$1 prompt=$2 def=$3 ans envv="SUFUN_$1"
   if (( AUTO )); then ans=${!envv:-$def}; else read -rp "$prompt [$def]: " ans; fi
   printf -v "ANS_$name" '%s' "${ans:-$def}"
 }
+confirm_word() {  # confirm_word <WORD> <prompt>: the user must type WORD exactly
+  (( AUTO )) && return 0
+  local ok; read -rp "$2" ok
+  [[ $ok == "$1" ]] || die "취소했습니다. 아무것도 바뀌지 않았습니다."
+}
+tlog() { (( AUTO )) && echo "SUFUN-TEST: $*" || true; }
+
+# ---------------------------------------------------------------------------
+# Disks
+# ---------------------------------------------------------------------------
+partdev() { [[ $1 =~ [0-9]$ ]] && echo "${1}p$2" || echo "$1$2"; }   # partdev /dev/mmcblk0 2 -> /dev/mmcblk0p2
+parent_disk() { local k; k=$(lsblk -no PKNAME "$1" 2>/dev/null | head -n1); [[ -n $k ]] && echo "/dev/$k" || echo "$1"; }
+
+# disk_kind <disk>: internal | sd | usb | other
+#   eMMC and microSD are both "mmcblk": the kernel tells them apart in
+#   /sys/block/mmcblkN/device/type ("MMC" = soldered eMMC, "SD" = card).
+disk_kind() {
+  local d=${1#/dev/}
+  case $d in sr*|loop*|zram*|ram*|*boot[0-9]|*rpmb) echo other; return ;; esac
+  if [[ $d == mmcblk* ]]; then
+    case $(cat "/sys/block/$d/device/type" 2>/dev/null) in
+      MMC) echo internal ;;
+      SD)  echo sd ;;
+      *)   echo other ;;
+    esac
+    return
+  fi
+  [[ $(lsblk -dno TRAN "$1" 2>/dev/null | tr -d ' ') == usb ]] && { echo usb; return; }
+  [[ $(cat "/sys/block/$d/removable" 2>/dev/null) == 1 ]] && { echo other; return; }
+  echo internal
+}
+kind_label() { case $1 in internal) echo "내부 저장장치";; sd) echo "microSD 카드";; usb) echo "USB";; *) echo "기타";; esac; }
+disk_model() {
+  local d=${1#/dev/} m
+  m=$(lsblk -dno MODEL "$1" 2>/dev/null | sed 's/ *$//')
+  [[ -z $m ]] && m=$(cat "/sys/block/$d/device/name" 2>/dev/null)
+  [[ -z $m ]] && m=$(cat "/sys/block/$d/device/model" 2>/dev/null | sed 's/ *$//')
+  echo "${m:-?}"
+}
+disk_line() {  # one line per disk: name, size, model, kind
+  printf '  %-16s %8s  %-22s %s\n' "$1" "$(lsblk -dno SIZE "$1" | tr -d ' ')" "$(disk_model "$1")" "$(kind_label "$(disk_kind "$1")")"
+}
+all_disks() { lsblk -dpno NAME | grep -vE '/(loop|zram|sr|ram)[0-9]+$|boot[0-9]+$|rpmb$' || true; }
+disks_of_kind() { local d; for d in $(all_disks); do [[ $(disk_kind "$d") == "$1" ]] && echo "$d"; done; return 0; }
+
+# The live system: partition and disk it was started from (never erased).
+LIVE_PART=$(findmnt -no SOURCE /run/archiso/bootmnt 2>/dev/null | head -n1 || true)
+if [[ -z $LIVE_PART ]]; then   # copied to RAM: the boot option still names the device
+  dev=$(sed -n 's/.*archisodevice=\([^ ]*\).*/\1/p' /proc/cmdline)
+  [[ -n $dev ]] && LIVE_PART=$(readlink -f "$dev" 2>/dev/null || true)
+fi
+LIVE_DISK=
+[[ -b ${LIVE_PART:-} ]] && LIVE_DISK=$(parent_disk "$LIVE_PART")
+
+# find_boot_stage: the partition on an internal disk that holds the SUFUN boot
+# stage made by sufun-sd-setup.ps1 (EFI/SUFUN/systemd-bootx64.efi + loader entry).
+find_boot_stage() {
+  local p d mp ok
+  for p in $(lsblk -pnlo NAME,FSTYPE | awk '$2 == "vfat" {print $1}'); do
+    d=$(parent_disk "$p")
+    [[ $(disk_kind "$d") == internal ]] || continue
+    mp=$(mktemp -d); ok=0
+    if mount -o ro "$p" "$mp" 2>/dev/null; then
+      [[ -f $mp/EFI/SUFUN/systemd-bootx64.efi && -f $mp/loader/entries/sufun-live.conf ]] && ok=1
+      umount "$mp"
+    fi
+    rmdir "$mp"
+    (( ok )) && { echo "$p"; return 0; }
+  done
+  return 1
+}
+
+# free_area <disk>: "<start> <sectors>" of the biggest unpartitioned area (logical sectors)
+free_area() {
+  sfdisk -F "$1" 2>/dev/null | awk '$1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ {
+      if ($3 > best) { best = $3; s = $1 } } END { if (best) print s, best }'
+}
+partnum_at() {  # partnum_at <disk> <start sector> -> partition number
+  sfdisk -d "$1" | sed -n "s|^\(/dev/[^ ]*\) *: *start= *$2,.*|\1|p" | grep -o '[0-9]*$'
+}
+
+# card_speed <partition>: 4K random-write speed in KB/s (8 MiB written, direct I/O).
+# Empty when fio is missing.
+card_speed() {
+  command -v fio >/dev/null || return 0
+  local t0 t1 ms
+  t0=$(date +%s%N)
+  timeout 90 fio --name=sufun-sd-test --filename="$1" --rw=randwrite --bs=4k --direct=1 \
+    --ioengine=psync --size=256M --io_size=8M --randrepeat=0 --output=/dev/null >/dev/null 2>&1 || true
+  t1=$(date +%s%N); ms=$(( (t1 - t0) / 1000000 ))
+  (( ms < 1 )) && ms=1
+  echo $(( 8 * 1024 * 1000 / ms ))
+}
 
 (( AUTO )) || clear
-bold "=== SUFUN installer (for the Microsoft Surface Go 3) ==="
+bold "=== SUFUN 설치 (Microsoft Surface Go 3) ==="
 echo
 
 # --- checks ---
-[[ -d /sys/firmware/efi ]] || die "Not booted in UEFI mode."
+[[ -d /sys/firmware/efi ]] || die "UEFI 모드로 부팅되지 않았습니다."
 curl -fsI --max-time 10 https://archlinux.org >/dev/null \
-  || die "No internet. Connect to Wi-Fi from the network icon in the taskbar, then run this again."
+  || die "인터넷 연결이 없습니다. 작업 표시줄의 네트워크 아이콘에서 Wi-Fi에 연결한 뒤 다시 실행하세요."
 
-# --- target disk ---
-bold "Available disks:"
-lsblk -dpno NAME,SIZE,MODEL,TRAN -e 7,11 | grep -v 'usb' || true
+bold "이 컴퓨터의 저장장치:"
+for d in $(all_disks); do disk_line "$d"; done
+[[ -n $LIVE_DISK ]] && echo "  (지금 실행 중인 라이브 시스템: $LIVE_PART)"
 echo
-default_disk=$(lsblk -dpno NAME -e 7,11 | grep -E 'mmcblk[0-9]$|nvme[0-9]n[0-9]$|vd[a-z]$' | head -n1 || true)
-ask DISK "Install to which disk?" "$default_disk"; DISK=$ANS_DISK
-[[ -b $DISK ]] || die "$DISK is not a disk."
+
+# --- install mode ---
+ask MODE "설치 방법을 고르세요:
+  1) SD카드에 설치 (윈도우 유지)
+  2) 내부 저장장치에 설치 (윈도우 삭제)
+번호" 1
+case $ANS_MODE in
+  1|sd)   MODE=sd ;;
+  2|emmc) MODE=emmc ;;
+  *) die "1 또는 2를 입력하세요." ;;
+esac
+tlog "MODE $MODE"
+
+BOOT_STAGE= CARD= ROOT_START= ROOT_SECTORS=
+if [[ $MODE == sd ]]; then
+  # ---------------- 1) SD카드에 설치 (윈도우 유지) ----------------
+  mapfile -t CARDS < <(disks_of_kind sd)
+  (( ${#CARDS[@]} )) || die "microSD 카드를 찾을 수 없습니다."
+  if (( ${#CARDS[@]} == 1 )); then
+    CARD=${CARDS[0]}
+  else
+    echo "microSD 카드:"; for d in "${CARDS[@]}"; do disk_line "$d"; done
+    ask DISK "어느 카드에 설치할까요?" "${CARDS[0]}"; CARD=$ANS_DISK
+  fi
+  [[ -b $CARD && $(disk_kind "$CARD") == sd ]] || die "$CARD 는 microSD 카드가 아닙니다."
+
+  BOOT_STAGE=$(find_boot_stage) || die "내부 저장장치에서 SUFUN 부팅 파일(EFI\\SUFUN)을 찾을 수 없습니다.
+먼저 Windows에서 sufun-sd-setup.ps1 을 실행하세요 (docs/sd-boot-ko.md)."
+  BOOT_DISK=$(parent_disk "$BOOT_STAGE")
+  [[ $BOOT_DISK != "$CARD" ]] || die "부팅 파일이 SD카드에 있습니다. 내부 저장장치에 있어야 합니다."
+  avail=$(( $(lsblk -bdno FSAVAIL "$BOOT_STAGE" 2>/dev/null | tr -d ' ' || echo 0) ))
+  if (( avail == 0 )); then
+    mp=$(mktemp -d); mount -o ro "$BOOT_STAGE" "$mp"
+    avail=$(df -B1 --output=avail "$mp" | tail -n1 | tr -d ' '); umount "$mp"; rmdir "$mp"
+  fi
+  (( avail >= 80 * 1024 * 1024 )) || die "내부 저장장치의 SUFUN 부팅 파티션에 빈 공간이 부족합니다 ($((avail / 1048576)) MB, 80 MB 필요)."
+
+  SS=$(blockdev --getss "$CARD")
+  read -r fstart fsectors <<< "$(free_area "$CARD")" || true
+  if [[ $CARD == "$LIVE_DISK" ]]; then
+    # The live system runs from this card: keep its partition, use the free space.
+    min=$(( MIN_ROOT_GIB * 1024 * 1024 * 1024 / SS ))
+    if [[ -z ${fsectors:-} ]] || (( fsectors < min )); then
+      die "SD카드에 빈 공간이 부족합니다 (${MIN_ROOT_GIB} GB 이상 필요).
+라이브 시스템이 이 카드에서 실행 중이라 카드를 지울 수 없습니다.
+Windows에서 sufun-sd-setup.ps1 을 'ISO가 내부 저장장치에 있음' 방식으로 다시 실행하면
+카드 앞부분에 라이브용 파티션(약 4 GB)만 만들고 나머지를 SUFUN 설치용으로 비워 둡니다."
+    fi
+    ROOT_START=$(( (fstart + 2047) / 2048 * 2048 ))                       # 1 MiB aligned
+    ROOT_SECTORS=$(( (fstart + fsectors - ROOT_START) / 2048 * 2048 ))
+    echo
+    bold "SD카드 $CARD 의 빈 공간 $(( ROOT_SECTORS * SS / 1024 / 1024 / 1024 )) GB에 SUFUN을 설치합니다."
+    echo "라이브 파티션($LIVE_PART)과 Windows는 그대로 둡니다."
+    echo "내부 저장장치에서는 $BOOT_STAGE 의 EFI\\SUFUN 폴더와 SUFUN 부팅 메뉴 항목만 바뀝니다."
+  else
+    echo
+    bold "SD카드 $CARD 의 모든 데이터가 지워집니다. Windows는 그대로 둡니다."
+  fi
+  disk_line "$CARD"
+  lsblk -o NAME,SIZE,FSTYPE,LABEL "$CARD"
+  if [[ $CARD == "$LIVE_DISK" ]]; then
+    confirm_word YES "계속하려면 YES 를 입력하세요: "
+  else
+    confirm_word ERASE "카드를 지우고 계속하려면 ERASE 를 입력하세요: "
+  fi
+  DISK=$CARD
+else
+  # ---------------- 2) 내부 저장장치에 설치 (윈도우 삭제) ----------------
+  echo
+  warn "⚠️  중요: 이 Surface는 USB로 부팅할 수 없습니다 (USB-C 포트에서 데이터가 안 됨)."
+  warn "    Windows를 지운 뒤 다시 Windows로 돌아가는 방법은 SUFUN 안의"
+  warn "    'Windows 복원' 도구(sufun-windows-restore) 뿐입니다 (docs/windows-restore-ko.md)."
+  echo
+  # Restore dry-run: prove that a "Windows Setup" firmware entry made from Linux
+  # shows up in this Surface's boot menu and starts, BEFORE Windows is erased.
+  if (( ! AUTO )) && command -v sufun-windows-restore >/dev/null; then
+    if sufun-windows-restore --boot-test-status >/dev/null 2>&1; then
+      read -rp "지난번 복원 테스트에서 부팅 메뉴에 'Windows Setup' 이 보였고, 고르면 Windows가 시작됐나요? [y/N]: " r
+      sufun-windows-restore --boot-test-remove || true
+      if [[ ! ${r:-n} =~ ^[Yy] ]]; then
+        warn "복원 테스트가 성공하지 않았습니다. Windows를 지우는 것은 권장하지 않습니다."
+        warn "'SD카드에 설치 (윈도우 유지)' 를 고르거나, 문서를 보고 원인을 확인하세요."
+      fi
+    else
+      read -rp "Windows를 지우기 전에 '복원 드라이런'을 해 볼까요? (권장) [Y/n]: " r
+      if [[ ${r:-y} =~ ^[Yy] ]]; then
+        sufun-windows-restore --boot-test-create || die "복원 테스트 항목을 만들지 못했습니다. Windows를 지우지 마세요."
+        echo
+        bold "복원 드라이런 준비 완료. 다음을 해 보세요:"
+        echo " 1. 컴퓨터를 끕니다."
+        echo " 2. 볼륨 위(+) 버튼을 누른 채 전원 버튼을 눌러 Surface UEFI를 엽니다."
+        echo " 3. 'Boot configuration' 에 'Windows Setup' 항목이 보이는지 확인하고,"
+        echo "    그 항목을 왼쪽으로 밀어(swipe) 바로 부팅합니다. Windows가 시작되면 성공입니다."
+        echo "    (실제 복원 때는 이 자리에서 Windows 설치 프로그램이 시작됩니다.)"
+        echo " 4. Windows에서 '고급 시작 → 장치 사용 → SUFUN (SD)' 로 다시 SUFUN 라이브를 켜고"
+        echo "    설치 프로그램을 다시 실행하세요. 테스트 항목은 그때 지웁니다."
+        echo "Windows는 지우지 않았습니다."
+        read -rp "Enter를 누르면 닫힙니다..."
+        exit 0
+      fi
+    fi
+  fi
+
+  TARGETS=()
+  for d in $(disks_of_kind internal); do
+    [[ $d == "$LIVE_DISK" ]] || TARGETS+=("$d")   # never the disk the live system runs from
+  done
+  (( ${#TARGETS[@]} )) || die "설치할 내부 저장장치를 찾을 수 없습니다."
+  echo "내부 저장장치:"; for d in "${TARGETS[@]}"; do disk_line "$d"; done
+  ask DISK "어느 저장장치에 설치할까요?" "${TARGETS[0]}"; DISK=$ANS_DISK
+  [[ -b $DISK ]] || die "$DISK 는 저장장치가 아닙니다."
+  [[ $DISK != "$LIVE_DISK" ]] || die "$DISK 에서 지금 라이브 시스템이 실행 중입니다. 이 저장장치는 지울 수 없습니다."
+  [[ $(disk_kind "$DISK") == internal ]] || die "$DISK 는 내부 저장장치가 아닙니다 ($(kind_label "$(disk_kind "$DISK")")). 이 방법은 내부 저장장치에만 설치합니다."
+  echo
+  bold "$DISK 의 모든 데이터가 지워집니다 (Windows 포함)."
+  disk_line "$DISK"
+  lsblk -o NAME,SIZE,FSTYPE,LABEL "$DISK"
+fi
+tlog "TARGET $DISK"
 
 # --- user settings ---
-ask HOST "Computer name" sufun;          HOST_NAME=$ANS_HOST
-ask USER "Username" user;                USER_NAME=$ANS_USER
-[[ $USER_NAME =~ ^[a-z_][a-z0-9_-]*$ ]] || die "Username must be lowercase letters/numbers."
+ask HOST "컴퓨터 이름" sufun;          HOST_NAME=$ANS_HOST
+ask USER "사용자 이름 (영문 소문자)" user; USER_NAME=$ANS_USER
+[[ $USER_NAME =~ ^[a-z_][a-z0-9_-]*$ ]] || die "사용자 이름은 영문 소문자/숫자만 쓸 수 있습니다."
 if (( AUTO )); then
   PASS1=${SUFUN_PASS:?}
 else
   while :; do
-    read -rsp "Password: " PASS1; echo
-    read -rsp "Password again: " PASS2; echo
+    read -rsp "암호: " PASS1; echo
+    read -rsp "암호 다시: " PASS2; echo
     [[ -n $PASS1 && $PASS1 == "$PASS2" ]] && break
-    echo "Passwords are empty or do not match, try again."
+    echo "암호가 비어 있거나 서로 다릅니다. 다시 입력하세요."
   done
 fi
-ask TZ "Timezone" Asia/Seoul;            TZONE=$ANS_TZ
-[[ -f /usr/share/zoneinfo/$TZONE ]] || die "Unknown timezone $TZONE"
-ask LANG "Language: 1) English  2) 한국어" 1
+ask TZ "시간대" Asia/Seoul;            TZONE=$ANS_TZ
+[[ -f /usr/share/zoneinfo/$TZONE ]] || die "알 수 없는 시간대: $TZONE"
+ask LANG "언어: 1) English  2) 한국어" 1
 [[ $ANS_LANG == 2 ]] && LANG_SEL=ko_KR.UTF-8 || LANG_SEL=en_US.UTF-8
 
-echo
-bold "ALL DATA ON $DISK WILL BE ERASED (Windows included)."
-lsblk "$DISK"
-if (( ! AUTO )); then
-  read -rp "Type ERASE to continue: " ok
-  [[ $ok == ERASE ]] || die "Cancelled."
+if [[ $MODE == emmc ]]; then
+  echo
+  bold "마지막 확인: $DISK 의 모든 데이터가 지워집니다 (Windows 포함)."
+  confirm_word ERASE "계속하려면 ERASE 를 입력하세요: "
+  # A leftover dry-run entry would point at the Windows that is erased now.
+  command -v sufun-windows-restore >/dev/null && sufun-windows-restore --boot-test-remove >/dev/null 2>&1 || true
 fi
 
-# --- partition: 1 GiB EFI (holds kernels) + btrfs root. No swap partition/file:
-#     swap lives in RAM (zram), so the eMMC is never used for swap. ---
-[[ $DISK =~ [0-9]$ ]] && P="${DISK}p" || P="$DISK"
-bold "Partitioning $DISK"
 umount -R /mnt 2>/dev/null || true
-wipefs -af "$DISK"
-sgdisk --zap-all "$DISK"
-sgdisk -n1:0:+1G -t1:ef00 -c1:EFI -n2:0:0 -t2:8304 -c2:sufun-root "$DISK"
-partprobe "$DISK"; udevadm settle
-mkfs.fat -F32 -n EFI "${P}1"
-mkfs.btrfs -f -L sufun-root "${P}2"
+if [[ $MODE == emmc ]]; then
+  # --- partition: 1 GiB EFI (holds kernels) + btrfs root. No swap partition/file:
+  #     swap lives in RAM (zram), so the eMMC is never used for swap. ---
+  P=$(partdev "$DISK" "")
+  bold "$DISK 파티션 만드는 중"
+  wipefs -af "$DISK"
+  sgdisk --zap-all "$DISK"
+  sgdisk -n1:0:+1G -t1:ef00 -c1:EFI -n2:0:0 -t2:8304 -c2:sufun-root "$DISK"
+  partprobe "$DISK"; udevadm settle
+  mkfs.fat -F32 -n EFI "${P}1"
+  ESP_PART=${P}1
+  ROOT_PART=${P}2
+else
+  bold "SD카드 $CARD 에 SUFUN 파티션 만드는 중"
+  if [[ -n $ROOT_START ]]; then
+    # Only ADD a partition in the free space; the live partition is not touched.
+    echo "${ROOT_START},${ROOT_SECTORS},L" | sfdisk --append --no-reread --no-tell-kernel "$CARD"
+    PN=$(partnum_at "$CARD" "$ROOT_START")
+    [[ -n $PN ]] || die "새 파티션을 찾을 수 없습니다."
+    partx -a --nr "$PN" "$CARD" 2>/dev/null || partx -u --nr "$PN" "$CARD"
+  else
+    wipefs -af "$CARD"
+    echo ',,L' | sfdisk --label dos "$CARD"
+    partprobe "$CARD"
+    PN=1
+  fi
+  udevadm settle
+  ROOT_PART=$(partdev "$CARD" "$PN")
+  for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -b $ROOT_PART ]] && break; sleep 1; done
+  [[ -b $ROOT_PART ]] || die "$ROOT_PART 이(가) 나타나지 않습니다."
+
+  # Quick 4K random-write test on the new (still empty) partition.
+  bold "SD카드 속도 확인 중 (4K 무작위 쓰기, 몇 초 걸립니다)..."
+  kbs=$(card_speed "$ROOT_PART")
+  if [[ -n $kbs ]]; then
+    printf '  4K 무작위 쓰기: %d.%d MB/s\n' $((kbs / 1000)) $((kbs % 1000 / 100))
+    tlog "INFO sd-4k-random-write ${kbs} KB/s"
+    if (( kbs < SLOW_KBS )); then
+      warn "⚠️  이 카드는 작은 파일 쓰기가 느립니다 (기준: 2 MB/s)."
+      warn "    매일 쓰기에는 느리게 느껴질 수 있습니다 (프로그램 시작, 업데이트, 브라우저)."
+      warn "    'A2' 표시가 있는 카드(애플리케이션 성능 등급 A2)를 권장합니다."
+      if (( ! AUTO )); then
+        read -rp "그래도 이 카드에 설치할까요? [y/N]: " r
+        if [[ ! ${r:-n} =~ ^[Yy] ]]; then
+          [[ -n $ROOT_START ]] && { sfdisk --delete --no-reread "$CARD" "$PN" || true; partx -d --nr "$PN" "$CARD" || true; }
+          die "취소했습니다. 카드에 만든 빈 파티션은 다시 지웠습니다."
+        fi
+      fi
+    fi
+  else
+    echo "  (fio가 없어 속도 확인을 건너뜁니다)"
+  fi
+fi
+mkfs.btrfs -f -L sufun-root "$ROOT_PART"
 
 # Subvolumes (the layout Timeshift needs: @ and @home at the top level):
 #   @ = system (snapshotted by Timeshift), @home = your files,
 #   @log and @pkg = kept OUT of system snapshots (logs, downloaded packages).
-mount "${P}2" /mnt
+mount "$ROOT_PART" /mnt
 for sv in @ @home @log @pkg; do btrfs subvolume create "/mnt/$sv"; done
 umount /mnt
-mount -o "$BTRFS_OPTS,subvol=@" "${P}2" /mnt
-mount --mkdir -o "$BTRFS_OPTS,subvol=@home" "${P}2" /mnt/home
-mount --mkdir -o "$BTRFS_OPTS,subvol=@log"  "${P}2" /mnt/var/log
-mount --mkdir -o "$BTRFS_OPTS,subvol=@pkg"  "${P}2" /mnt/var/cache/pacman/pkg
-mount --mkdir -o umask=0077 "${P}1" /mnt/boot
+mount -o "$BTRFS_OPTS,subvol=@" "$ROOT_PART" /mnt
+mount --mkdir -o "$BTRFS_OPTS,subvol=@home" "$ROOT_PART" /mnt/home
+mount --mkdir -o "$BTRFS_OPTS,subvol=@log"  "$ROOT_PART" /mnt/var/log
+mount --mkdir -o "$BTRFS_OPTS,subvol=@pkg"  "$ROOT_PART" /mnt/var/cache/pacman/pkg
+if [[ $MODE == emmc ]]; then
+  mount --mkdir -o umask=0077 "$ESP_PART" /mnt/boot
+else
+  # /boot stays on the card (inside @); the boot stage on the internal disk is /efi.
+  mount --mkdir -o umask=0077 "$BOOT_STAGE" /mnt/efi
+fi
 
 # --- package repos ---
-bold "Setting up package repositories"
+bold "패키지 저장소 설정 중"
 pacman-key --add "$SHARE/surface.asc"
 pacman-key --lsign-key "$SURFACE_KEY"
 TARGET_CONF=/tmp/sufun-pacman.conf         # becomes the installed system's pacman.conf
@@ -119,12 +393,12 @@ cp /etc/pacman.conf "$TARGET_CONF"
 sed -i 's/^#ParallelDownloads/ParallelDownloads/' "$TARGET_CONF"
 sed -i '/^#\[multilib\]/{s/^#//;n;s/^#//}' "$TARGET_CONF"          # Steam needs [multilib]
 grep -q '^\[linux-surface\]' "$TARGET_CONF" || printf '\n[linux-surface]\nServer = https://pkg.surfacelinux.com/arch/\n' >> "$TARGET_CONF"
-# Install-time only: our local repo on the USB (sufun-base, fonts, theme...)
+# Install-time only: our local repo on the live medium (sufun-base, fonts, theme...)
 INSTALL_CONF=/tmp/sufun-pacman-install.conf
 cp "$TARGET_CONF" "$INSTALL_CONF"
 printf '\n[sufun-local]\nSigLevel = Optional TrustAll\nServer = file://%s/repo\n' "$SHARE" >> "$INSTALL_CONF"
 
-bold "Downloading and installing packages (takes 10-30 minutes)"
+bold "패키지를 내려받아 설치하는 중 (10-30분, SD카드는 더 걸릴 수 있습니다)"
 # sufun-base pulls in the whole desktop. The desktop list is also given directly,
 # so the explicit driver choices (vulkan-intel, lib32-mesa...) are used by pacman.
 mapfile -t PKGS < <(sed -e 's/#.*//' -e 's/[[:space:]]//g' -e '/^$/d' "$SHARE/install.txt" "$SHARE/desktop.txt")
@@ -137,10 +411,18 @@ cp "$TARGET_CONF" /mnt/etc/pacman.conf
 genfstab -U /mnt >> /mnt/etc/fstab
 sed -i -E 's/,subvolid=[0-9]+//; s/subvolid=[0-9]+,//' /mnt/etc/fstab
 grep -q subvolid /mnt/etc/fstab && die "could not remove subvolid from fstab"
+if [[ $MODE == sd ]]; then
+  # The boot stage partition may be the Windows EFI partition: never fsck it from
+  # Linux (pass 0), and never block the boot if it is missing (nofail).
+  BS_UUID=$(blkid -s UUID -o value "$BOOT_STAGE")
+  sed -i '\#[[:space:]]/efi[[:space:]]#d' /mnt/etc/fstab
+  printf '\n# SUFUN boot stage on the internal disk (kernel copies, see /etc/sufun/boot-stage.conf)\nUUID=%s  /efi  vfat  rw,umask=0077,nofail,x-systemd.device-timeout=10s  0 0\n' \
+    "$BS_UUID" >> /mnt/etc/fstab
+fi
 
 # Timeshift in btrfs mode: snapshots of @ only (not @home), no schedule.
 # The pacman hook makes one before every update and keeps the newest 3.
-ROOT_UUID_FS=$(blkid -s UUID -o value "${P}2")
+ROOT_UUID_FS=$(blkid -s UUID -o value "$ROOT_PART")
 install -d /mnt/etc/timeshift
 cat > /mnt/etc/timeshift/timeshift.json <<EOF
 {
@@ -175,10 +457,47 @@ sed -i -e 's/^DEFAULT_INPUT_POLICY=.*/DEFAULT_INPUT_POLICY="DROP"/' \
        -e 's/^DEFAULT_OUTPUT_POLICY=.*/DEFAULT_OUTPUT_POLICY="ACCEPT"/' \
        -e 's/^DEFAULT_FORWARD_POLICY=.*/DEFAULT_FORWARD_POLICY="DROP"/' /mnt/etc/default/ufw
 
+# --- boot options ---
+ROOT_UUID=$(blkid -s PARTUUID -o value "$ROOT_PART")
+# quiet + splash = SUFUN boot screen (Plymouth) instead of text
+OPTS="root=PARTUUID=$ROOT_UUID rootflags=subvol=@ rw quiet splash loglevel=3 nowatchdog"
+# Test mode only (never on a real install): serial console for the test log, and
+# plymouth.ignore-serial-consoles so Plymouth still draws the SUFUN splash on the
+# screen (with a serial console it would fall back to text) for the CI screenshots.
+(( AUTO )) && OPTS="$OPTS console=ttyS0,115200 console=tty0 plymouth.ignore-serial-consoles sufun.test=installed"
+
+if [[ $MODE == sd ]]; then
+  # SD install: the boot stage on the internal disk gets the kernel copies
+  # (sync-boot-stage, run by mkinitcpio below and by every later update).
+  install -d /mnt/etc/sufun
+  cat > /mnt/etc/sufun/boot-stage.conf <<EOF
+# SUFUN SD-card install: kernel + initramfs are copied to the internal disk,
+# because the Surface firmware cannot start anything from the microSD card.
+# Used by /usr/lib/sufun/sync-boot-stage (pacman hook + mkinitcpio post hook).
+BOOT_STAGE_UUID=$BS_UUID
+BOOT_STAGE_MOUNT=/efi
+BOOT_STAGE_DIR=EFI/SUFUN/sd
+EOF
+  # The card reader drivers, always in the initramfs (root is on the card):
+  # rtsx_pci + rtsx_pci_sdmmc = Surface Go 3 (Realtek RTS522A), sdhci_pci = other readers.
+  cat > /mnt/etc/mkinitcpio.conf.d/20-sufun-sd.conf <<'EOF'
+# SUFUN SD-card install: the root file system is on the microSD card.
+MODULES+=(mmc_block sdhci_pci rtsx_pci rtsx_pci_sdmmc)
+EOF
+  install -d /mnt/efi/loader/entries /mnt/efi/EFI/SUFUN/sd
+  cat > /mnt/efi/loader/entries/sufun-sd.conf <<EOF
+title   SUFUN (microSD)
+linux   /EFI/SUFUN/sd/vmlinuz-linux-surface
+initrd  /EFI/SUFUN/sd/intel-ucode.img
+initrd  /EFI/SUFUN/sd/initramfs-linux-surface.img
+options $OPTS
+EOF
+fi
+
 # --- system config ---
-bold "Configuring the system"
-arch-chroot /mnt /bin/bash -e -s -- "$HOST_NAME" "$USER_NAME" "$TZONE" "$LANG_SEL" <<'CHROOT'
-HOST_NAME=$1 USER_NAME=$2 TZONE=$3 LANG_SEL=$4
+bold "시스템 설정 중"
+arch-chroot /mnt /bin/bash -e -s -- "$HOST_NAME" "$USER_NAME" "$TZONE" "$LANG_SEL" "$MODE" <<'CHROOT'
+HOST_NAME=$1 USER_NAME=$2 TZONE=$3 LANG_SEL=$4 MODE=$5
 ln -sf "/usr/share/zoneinfo/$TZONE" /etc/localtime
 hwclock --systohc
 sed -i -E 's/^#(en_US\.UTF-8|ko_KR\.UTF-8)/\1/' /etc/locale.gen
@@ -196,41 +515,72 @@ systemctl enable NetworkManager sddm power-profiles-daemon thermald \
 # Bluetooth starts on demand (D-Bus), not at boot. CUPS (printing) is not installed.
 ln -sf /usr/lib/systemd/system/bluetooth.service /etc/systemd/system/dbus-org.bluez.service
 # The initramfs (with the SUFUN boot screen) was built by pacman's hooks during
-# pacstrap; build it once more now that vconsole.conf exists.
+# pacstrap; build it once more now that vconsole.conf exists. On SD installs,
+# mkinitcpio's post hook also copies it to the boot stage (/efi).
 mkinitcpio -P
-bootctl install
+if [[ $MODE == emmc ]]; then
+  bootctl install
+else
+  # SD install: NO "bootctl install": it would add a firmware boot entry and put
+  # it before Windows. The firmware entry "SUFUN (SD)" from Windows is used.
+  /usr/lib/sufun/sync-boot-stage
+fi
 CHROOT
 printf '%s:%s\n' "$USER_NAME" "$PASS1" | arch-chroot /mnt chpasswd
 
 # --- bootloader entries (systemd-boot) ---
-ROOT_UUID=$(blkid -s PARTUUID -o value "${P}2")
-# quiet + splash = SUFUN boot screen (Plymouth) instead of text
-OPTS="root=PARTUUID=$ROOT_UUID rootflags=subvol=@ rw quiet splash loglevel=3 nowatchdog"
-# Test mode only (never on a real install): serial console for the test log, and
-# plymouth.ignore-serial-consoles so Plymouth still draws the SUFUN splash on the
-# screen (with a serial console it would fall back to text) for the CI screenshots.
-(( AUTO )) && OPTS="$OPTS console=ttyS0,115200 console=tty0 plymouth.ignore-serial-consoles sufun.test=installed"
-cat > /mnt/boot/loader/loader.conf <<EOF
+if [[ $MODE == emmc ]]; then
+  cat > /mnt/boot/loader/loader.conf <<EOF
 default sufun.conf
 timeout 2
 console-mode max
 editor no
 EOF
-cat > /mnt/boot/loader/entries/sufun.conf <<EOF
+  cat > /mnt/boot/loader/entries/sufun.conf <<EOF
 title   SUFUN
 linux   /vmlinuz-linux-surface
 initrd  /intel-ucode.img
 initrd  /initramfs-linux-surface.img
 options $OPTS
 EOF
-if [[ -f /mnt/boot/initramfs-linux-surface-fallback.img ]]; then
-  cat > /mnt/boot/loader/entries/sufun-fallback.conf <<EOF
+  if [[ -f /mnt/boot/initramfs-linux-surface-fallback.img ]]; then
+    cat > /mnt/boot/loader/entries/sufun-fallback.conf <<EOF
 title   SUFUN (fallback)
 linux   /vmlinuz-linux-surface
 initrd  /intel-ucode.img
 initrd  /initramfs-linux-surface-fallback.img
 options ${OPTS/ quiet splash/}
 EOF
+  fi
+  # Started from a microSD card: keep that live system reachable as a rescue
+  # entry (no USB on this Surface, and the Windows boot stage is gone now).
+  if [[ -n $LIVE_DISK && $(disk_kind "$LIVE_DISK") == sd && -d /run/archiso/bootmnt/arch/boot/x86_64 ]]; then
+    LIVE_UUID=$(blkid -s UUID -o value "$LIVE_PART")
+    B=/run/archiso/bootmnt/arch/boot
+    install -d /mnt/boot/EFI/SUFUN/live
+    cp "$B/x86_64/vmlinuz-linux-surface" "$B/x86_64/initramfs-linux-surface.img" /mnt/boot/EFI/SUFUN/live/
+    [[ -f $B/intel-ucode.img ]] && cp "$B/intel-ucode.img" /mnt/boot/EFI/SUFUN/live/
+    {
+      echo "title   SUFUN Live (microSD, rescue)"
+      echo "linux   /EFI/SUFUN/live/vmlinuz-linux-surface"
+      [[ -f $B/intel-ucode.img ]] && echo "initrd  /EFI/SUFUN/live/intel-ucode.img"
+      echo "initrd  /EFI/SUFUN/live/initramfs-linux-surface.img"
+      echo "options archisobasedir=arch archisodevice=/dev/disk/by-uuid/$LIVE_UUID copytoram=n"
+    } > /mnt/boot/loader/entries/sufun-live.conf
+  fi
+else
+  # Boot menu on the boot stage: start the installed system by default; the
+  # live entry stays as a rescue system.
+  LC=/mnt/efi/loader/loader.conf
+  if [[ -f $LC ]] && grep -q '^default' "$LC"; then
+    sed -i 's/^default .*/default sufun-sd.conf/' "$LC"
+  else
+    printf 'default sufun-sd.conf\ntimeout 4\nconsole-mode keep\neditor no\n' > "$LC"
+  fi
+  sed -i 's/^title .*/title   SUFUN Live (microSD, rescue)/' /mnt/efi/loader/entries/sufun-live.conf
+  for f in vmlinuz-linux-surface initramfs-linux-surface.img; do
+    cmp -s "/mnt/boot/$f" "/mnt/efi/EFI/SUFUN/sd/$f" || die "부팅 파일 $f 이(가) 내부 저장장치에 복사되지 않았습니다."
+  done
 fi
 
 # Test mode: the installed system checks itself on its first boot.
@@ -244,9 +594,17 @@ sync
 umount -R /mnt
 trap - ERR
 echo
-bold "Installation complete! Remove the USB drive and reboot."
+if [[ $MODE == sd ]]; then
+  bold "설치 완료! SUFUN이 microSD 카드에 설치되었습니다. Windows는 그대로 있습니다."
+  echo "SUFUN을 켜려면: 카드를 꽂은 채로 Windows의 '고급 시작 → 장치 사용 → SUFUN (SD)'"
+  echo "또는 Surface UEFI의 Boot configuration에서 'SUFUN (SD)' 를 고르세요."
+  echo "카드를 빼면 SUFUN은 켜지지 않고, Windows는 평소처럼 켜집니다."
+else
+  bold "설치 완료! 다시 시작하세요."
+  echo "Windows로 돌아가려면: SUFUN의 'Windows 복원' (docs/windows-restore-ko.md)."
+fi
 if (( AUTO )); then echo "SUFUN-TEST: INSTALL-OK"; exit 0; fi
 echo
 echo "Tip: protect this Surface with a UEFI password now (see the README, 'UEFI 암호')."
-read -rp "Reboot now? [Y/n]: " r
+read -rp "지금 다시 시작할까요? [Y/n]: " r
 [[ ${r:-y} =~ ^[Yy] ]] && systemctl reboot

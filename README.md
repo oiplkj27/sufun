@@ -35,6 +35,8 @@ packages/pkgbuilds/         Pinned copies of every non-official package we use
 profile/airootfs/           Live-USB-only files (auto-login, installer, CI self-test)
 release-notes/<ver>.txt     Korean release notes shown in the update dialog
 scripts/                    sufun-key.sh, make-sufun-update.sh, check-aur-updates.sh, ci/
+scripts/windows/            sufun-sd-setup.ps1: Windows side of the microSD boot (no USB), see docs/sd-boot-ko.md
+docs/                       Korean guides: sd-boot-ko.md (microSD boot), windows-restore-ko.md (back to Windows)
 .github/workflows/          build-iso.yml (test builds), release.yml (releases), build-test.yml (shared)
 ```
 
@@ -451,8 +453,12 @@ SUFUN은 디스크를 암호화하지 않습니다. 대신 **Surface UEFI 암호
 
 Every build (test builds and releases) is boot-tested in a virtual machine (QEMU + UEFI firmware), like KDE Linux does:
 1. **Live USB** boots to the Plasma desktop and checks the Windows 11-style layout (start menu, search box, Task View, clock, tray with `^` on the left, Win+A/Win+N, desktop icons, SUFUN logo icons, no Microsoft logos) and prints RAM numbers (`INFO ram ...`).
-2. **Installer** runs in a test-only automatic mode and installs to an empty 64 GB virtual disk. This mode runs only when **all three** are true: `SUFUN_AUTO=1`, the kernel option `sufun.test=install`, and the computer is a QEMU VM. So it can never start on your Surface.
+2. **Installer** runs in a test-only automatic mode and installs to an empty 64 GB virtual disk. This mode runs only when **all three** are true: `SUFUN_AUTO=1`, the kernel option `sufun.test=install` (or `sufun.test=sdinstall`), and the computer is a QEMU VM. So it can never start on your Surface.
 3. **Installed system** boots from the virtual disk and checks itself: SUFUN boot entry, `splash` and the Plymouth theme (logo + text) in the initramfs, login screen shown **with the "sufun" theme on Wayland** (the greeter was started with `--theme /usr/share/sddm/themes/sufun` and never logged "Fallback to embedded theme"; the QML of the theme it loaded contains no "hibernate", and apart from that one removed button it is identical to the installed Breeze; its log lines are copied to the serial log), `sufun-base` version = `VERSION`, zram, earlyoom and firewall active, no `subvolid` in fstab, Timeshift config, os-release, login splash set to SUFUN in `/etc/xdg/ksplashrc` (live USB too), hibernation not offered by logind and sleep not switched off. At the end it opens Plasma's logout screen and saves `3-installed-logout.png`. After the login-screen screenshot it logs the test user in automatically (**test disk only**: the autologin file is written by the test itself, a real install never has it) and checks the **Korean** desktop: Korean folder names (바탕화면, 문서, 다운로드), taskbar, tray, desktop icons.
+4. **Installer, mode 2** (run 2) also has an empty microSD card attached and gets no disk name: it must pick the internal disk itself (`TARGET /dev/vda`), and the installed system checks its root is on that disk.
+5. **Windows restore** (runs 3-5), with a dummy ISO in the Windows layout (`scripts/ci/make-dummy-windows-iso.sh`: real but tiny WIM files, systemd-boot as `bootx64.efi`, **no Microsoft files**): SUFUN partition shrunk online, `WININSTALL` FAT32 partition, `install.wim` split into `.swm` parts, "Windows Setup" entry last in BootOrder with the default unchanged, `BootNext`; next start: the firmware really starts the boot file on `WININSTALL`; then `--remove` gives the space back and deletes the entry.
+6. **Windows script** (job `windows-sd-setup`, real Windows runner, **virtual disks only**): `sufun-sd-setup.ps1` parses in PowerShell 5.1 and has its UTF-8 BOM; card case (a) with the boot stage in the EFI partition; card case (b) with a too-small EFI partition, so the "Windows" partition is shrunk and `SUFUNBOOT` made; refuses a real disk; `-Uninstall` restores the exact old partition sizes. Not testable there: bcdedit firmware entries, Secure Boot, BitLocker, a real card reader.
+7. **microSD** (job `test-sd`, using the disks the Windows script made): live system from the emulated SD card (`sdhci-pci` + `sd-card`) to `LIVE-DESKTOP-OK`; "SD카드에 설치"; the installed system boots from the card with the boot stage on the internal disk and checks: root on the card, `/efi` on the internal disk, no Linux firmware entry, rtsx modules in the initramfs, boot stage in sync after `mkinitcpio -P` and after a kernel reinstall; full desktop checks. Afterwards the internal disk outside the boot stage (partition table, "Windows" partition) is byte-for-byte unchanged. The firmware entry is emulated with the EFI fallback path.
 
 Only in test mode, the installed system's boot options also get `plymouth.ignore-serial-consoles` (with the test's serial console, Plymouth would show text instead of the SUFUN splash). A real install's boot options are unchanged.
 
@@ -501,19 +507,36 @@ cd "/mnt/c/Surface go 3 OS" && sudo bash build.sh     # ISO ends up in out/
 ```
 Note: building also installs the build tools inside your WSL Arch.
 
-## 2. Write it to a USB drive
-Use [Rufus](https://rufus.ie) in **DD image** mode, or copy the ISO onto a [Ventoy](https://www.ventoy.net) stick.
-The Surface Go 3 has a single USB-C port, so you need a USB-C stick or an adapter.
+## 2. Put it on a microSD card (no USB needed) — or a USB drive
+**This Surface's USB-C port has no data, and its firmware cannot boot from microSD.** So the
+live system goes on the microSD card, and only a small boot stage (systemd-boot + kernel +
+initramfs, ~150 MB) goes on the internal disk next to Windows. On the Surface's own Windows,
+run **`scripts/windows/sufun-sd-setup.ps1`** as Administrator (also attached to every release).
+Step-by-step Korean guide: **[docs/sd-boot-ko.md](docs/sd-boot-ko.md)**.
+- Checks Secure Boot is off and BitLocker (offers `Suspend-BitLocker -RebootCount 1` after you confirm you have the recovery key).
+- Card case (a) ISO on the internal disk: formats the card (MBR, FAT32 `SUFUNLIVE` ≈ 4 GB, rest left free for "SD카드에 설치"). Case (b) ISO already on the card: no format, extracts in place, offers to delete the ISO.
+- Only disks with BusType SD/MMC or removable media, never the Windows/boot disk; shows size/model; you type `YES`.
+- Boot stage in `\EFI\SUFUN\` of the EFI System Partition if it has room, else C: shrinks by 1 GB for a hidden FAT32 partition `SUFUNBOOT`. The kernel finds the card by its FAT volume UUID (`archisodevice=/dev/disk/by-uuid/XXXX-XXXX`, labels can be only 11 letters).
+- Firmware entry **"SUFUN (SD)"** added **last** (bcdedit `/addlast`): Windows stays the default. Pick it in Windows (Advanced startup → Use a device) or Surface UEFI → Boot configuration.
+- `-Uninstall` removes the entry, the boot files and `SUFUNBOOT` (C: back to its old size); the card is left as it is.
+
+The live initramfs explicitly contains the Go 3's microSD reader driver — **Realtek RTS522A (PCI `10ec:522a`): `rtsx_pci` + `rtsx_pci_sdmmc`** (seen in Go 3 kernel logs in linux-surface issues #671/#692) — plus `sdhci`/`sdhci_pci` (Intel SD/eMMC controller), `mmc_block`, `vfat`/`exfat` and NLS (`profile/airootfs/etc/mkinitcpio.conf.d/zz-sufun-sd.conf`). `build.sh` stops if any of them is missing from the built initramfs, or if the ISO's `EFI/BOOT/BOOTx64.EFI` is not systemd-boot (the Windows script reuses it).
+
+On other PCs a USB stick still works: [Rufus](https://rufus.ie) in **DD image** mode, or [Ventoy](https://www.ventoy.net).
 
 ## 3. Boot it on the Surface Go 3
-1. **Disable Secure Boot**: power off, hold **Volume Up** and press **Power** to open Surface UEFI, go to *Security → Secure Boot → Disabled*.
-2. Plug in the USB, then hold **Volume Down** and press **Power** to boot from USB.
+1. **Disable Secure Boot**: power off, hold **Volume Up** and press **Power** to open Surface UEFI, go to *Security → Secure Boot → None*.
+2. microSD: in Windows *Settings → System → Recovery → Advanced startup → Use a device → SUFUN (SD)*, or Surface UEFI → *Boot configuration* → swipe **SUFUN (SD)** left. Then pick **SUFUN Live (microSD)**. (Boot menus are in English: firmware has no Korean font.)
 3. The live desktop starts automatically. Connect to Wi-Fi from the taskbar.
 
 ## 4. Install
-Double-click **Install SUFUN** (or run `sudo sufun-install` in Konsole).
+Double-click **Install SUFUN** (or run `sudo sufun-install` in Konsole). Two choices:
+1. **SD카드에 설치 (윈도우 유지)** — btrfs root (same subvolumes and options) in the card's free space after the live partition; the live partition stays as a rescue entry. `/boot` is on the card; the boot stage on the internal disk (mounted at `/efi`, `nofail`, never fsck'ed) gets kernel/initramfs/microcode copies from `/usr/lib/sufun/sync-boot-stage`, run by the pacman hook `99-sufun-boot-stage.hook` and the mkinitcpio post hook. No `bootctl install` (it would put a Linux entry before Windows). On the internal disk only `EFI/SUFUN/` and the SUFUN loader entries are written. Before installing, a 4K random-write test (`fio`, 8 MiB direct I/O) warns in Korean below ~2 MB/s and recommends an A2 card; you can continue.
+2. **내부 저장장치에 설치 (윈도우 삭제)** — erases the internal disk. First a warning that this Surface cannot boot from USB and an offer of a **restore dry-run** (a "Windows Setup" firmware entry that starts the existing Windows, to check it appears in the boot menu). If the live system runs from the card, a rescue entry for it is kept on the new EFI partition.
 
-> ⚠️ This **erases the whole internal drive, Windows included**. Back up first. Before you start, you can download a Surface Go 3 recovery image from Microsoft so you can restore Windows later.
+Both modes refuse the disk the live system runs from, tell eMMC and microSD apart (`/sys/block/mmcblkN/device/type`: `MMC` = internal, `SD` = card), show model/size and need a typed `YES`/`ERASE`.
+
+**Back to Windows without USB:** app **Windows 복원** (`sufun-windows-restore`), see **[docs/windows-restore-ko.md](docs/windows-restore-ko.md)**. You download the Windows 11 ISO from microsoft.com yourself (nothing from Microsoft is bundled or downloaded). It shrinks the SUFUN btrfs partition online, creates a FAT32 `WININSTALL` partition with the ISO contents (`install.wim` split into `.swm` with wimlib when ≥ 4 GiB), and adds a firmware entry **"Windows Setup"** last in the boot order (`efibootmgr --create-only`); "지금 Windows 설치 시작" sets `BootNext`. In Windows Setup delete only the SUFUN EFI and sufun-root partitions, keep `WININSTALL`. `--remove` undoes everything.
 
 Afterwards: set the UEFI password (see "UEFI 암호").
 
@@ -535,3 +558,6 @@ The ISO is built and boot-tested in GitHub Actions (virtual machine), but not ye
 - Plymouth → SDDM hand-over (`--retain-splash`); if the login screen doesn't appear, delete `/usr/lib/systemd/system/sddm.service.d/50-sufun-plymouth.conf`.
 - Login screen on Wayland (KWin) with Plasma's on-screen keyboard: tested in the VM only. If the login screen stays black on the Surface, switch to a text console (Ctrl+Alt+F3), log in, and create `/etc/sddm.conf.d/20-x11.conf` with `[General]` / `DisplayServer=x11`, then reboot (the "sufun" login theme stays).
 - Login theme "sufun" is a generated copy of Breeze. If it ever fails to load (SDDM's plain fallback screen appears), create `/etc/sddm.conf.d/20-breeze.conf` with `[Theme]` / `Current=breeze` to use plain Breeze again (the Hibernate button then shows greyed out).
+- microSD boot: the firmware entry "SUFUN (SD)" is made with `bcdedit /copy {bootmgr}` (not testable in CI). When the boot stage is in the extra `SUFUNBOOT` partition (EFI partition too small), the Surface firmware must read FAT32 from a partition that is not the EFI partition; most UEFI firmware does. If choosing "SUFUN (SD)" does nothing, run `-Uninstall` and report it.
+- microSD speed: the Go 3's Realtek reader + a U1 card may be slow for daily use of an SD install (the installer measures it).
+- Windows restore: the real Windows Setup starting from the `WININSTALL` partition and installing from `install.swm` was not tested (no Microsoft files in CI); the restore dry-run checks the firmware part on the real Surface.

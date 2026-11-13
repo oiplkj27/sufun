@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!-- Lets "pkexec /usr/bin/sufun-windows-restore" ask for the admin password with a clear message. -->
+<policyconfig>
+  <vendor>SUFUN</vendor>
+  <action id="org.sufun.windows-restore">
+    <description>Prepare the Windows installer (no USB)</description>
+    <description xml:lang="ko">Windows 설치 준비 (USB 없이)</description>
+    <message>Changing partitions and boot entries requires the administrator password.</message>
+    <message xml:lang="ko">파티션과 부팅 항목을 바꾸려면 관리자 암호가 필요합니다.</message>
+    <icon_name>sufun-logo</icon_name>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/sufun-windows-restore</annotate>
+  </action>
+</policyconfig>

@@ -1,0 +1,23 @@
+# SD-card installs only: copy the new kernel/initramfs/microcode to the boot
+# stage on the internal disk (see /usr/lib/sufun/sync-boot-stage). Runs after
+# the kernel's own initramfs hook (90-mkinitcpio-install) and 91-sufun-initramfs.
+# Does nothing on normal installs. The targets are the ones that make
+# mkinitcpio rebuild the initramfs, plus microcode and systemd-boot.
+[Trigger]
+Type = Path
+Operation = Install
+Operation = Upgrade
+Target = usr/lib/modules/*/vmlinuz
+Target = usr/lib/initcpio/*
+Target = usr/lib/firmware/*
+Target = usr/src/*/dkms.conf
+Target = boot/*-ucode.img
+Target = usr/lib/systemd/boot/efi/systemd-bootx64.efi
+Target = usr/share/plymouth/themes/sufun/*
+Target = etc/mkinitcpio.conf.d/*
+Target = usr/lib/modprobe.d/sufun-i915.conf
+
+[Action]
+Description = SUFUN: 내부 저장장치의 부팅 파일을 SD카드 시스템과 맞추는 중...
+When = PostTransaction
+Exec = /usr/lib/sufun/sync-boot-stage

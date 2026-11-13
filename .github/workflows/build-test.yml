@@ -76,7 +76,7 @@ jobs:
           for try in 1 2 3 4 5; do
             sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update &&
             sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y --no-install-recommends \
-              qemu-system-x86 qemu-utils ovmf xorriso python3 && exit 0
+              qemu-system-x86 qemu-utils ovmf xorriso python3 wimtools && exit 0
             echo "apt failed (try $try), waiting 30 s"; sleep 30
           done
           exit 1
@@ -95,4 +95,100 @@ jobs:
         with:
           name: sufun-test-results
           path: test-results/
+          retention-days: 14
+
+  # Windows side of the microSD boot (scripts/windows/sufun-sd-setup.ps1), run for
+  # real on a Windows runner, but only on virtual disks (VHDX files): see
+  # scripts/ci/windows-sd-setup-test.ps1. The disks it makes are booted by test-sd.
+  windows-sd-setup:
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sufun-iso
+          path: iso
+
+      - name: Check the scripts parse in Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          foreach ($f in 'scripts\windows\sufun-sd-setup.ps1', 'scripts\ci\windows-sd-setup-test.ps1') {
+            $e = $null; $t = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $f), [ref]$t, [ref]$e)
+            if ($e) { $e | ForEach-Object { Write-Host "$f $($_.Extent.StartLineNumber): $($_.Message)" }; exit 1 }
+          }
+          # Korean text needs a UTF-8 BOM in Windows PowerShell 5.1
+          $b = [IO.File]::ReadAllBytes((Resolve-Path 'scripts\windows\sufun-sd-setup.ps1'))
+          if ($b[0] -ne 0xEF -or $b[1] -ne 0xBB -or $b[2] -ne 0xBF) { Write-Host 'sufun-sd-setup.ps1 has no UTF-8 BOM'; exit 1 }
+
+      - name: Setup test (case a + case b, ESP and SUFUNBOOT partition, uninstall)
+        shell: powershell
+        run: |
+          $iso = (Get-ChildItem iso\*.iso | Select-Object -First 1).FullName
+          & .\scripts\ci\windows-sd-setup-test.ps1 -Phase setup -Work "$env:RUNNER_TEMP\sdtest" -Iso $iso
+          exit $LASTEXITCODE
+
+      - name: Upload the virtual internal disk and SD card
+        uses: actions/upload-artifact@v4
+        with:
+          name: sufun-sd-test-disks
+          path: |
+            ${{ runner.temp }}/sdtest/internal.vhdx
+            ${{ runner.temp }}/sdtest/card.vhdx
+          compression-level: 1
+          retention-days: 3
+
+      - name: Uninstall test (case a)
+        shell: powershell
+        run: |
+          & .\scripts\ci\windows-sd-setup-test.ps1 -Phase uninstall -Work "$env:RUNNER_TEMP\sdtest"
+          exit $LASTEXITCODE
+
+  # microSD live boot, "SD카드에 설치" and the installed system on the card,
+  # with the disks made by the Windows script above.
+  test-sd:
+    needs: windows-sd-setup
+    runs-on: ubuntu-latest
+    steps:
+      - name: Free disk space on the runner (32 GiB virtual SD card)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache /usr/local/share/boost
+          df -h /
+
+      - uses: actions/checkout@v4
+
+      - name: Enable KVM (hardware virtualization) if the runner has it
+        run: |
+          if [ -e /dev/kvm ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+            sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+          fi
+          ls -l /dev/kvm || echo "no KVM: tests use slow software emulation"
+
+      - name: Install QEMU, UEFI firmware and disk tools
+        run: |
+          for try in 1 2 3 4 5; do
+            sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update &&
+            sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y --no-install-recommends \
+              qemu-system-x86 qemu-utils ovmf python3 mtools gdisk && exit 0
+            echo "apt failed (try $try), waiting 30 s"; sleep 30
+          done
+          exit 1
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sufun-sd-test-disks
+          path: sd-disks
+
+      - name: microSD boot and install test
+        run: bash scripts/ci/qemu-sd-test.sh sd-disks "$(tr -d '[:space:]' < VERSION)" test-results-sd
+
+      - name: Upload screenshots and serial logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sufun-test-results-sd
+          path: test-results-sd/
           retention-days: 14

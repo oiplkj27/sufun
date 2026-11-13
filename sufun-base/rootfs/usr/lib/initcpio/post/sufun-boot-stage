@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# mkinitcpio post hook: runs after every initramfs image mkinitcpio builds
+# (also "sudo mkinitcpio -P" by hand). SD-card installs only: keeps the boot
+# stage on the internal disk in sync. Does nothing on normal installs.
+exec /usr/lib/sufun/sync-boot-stage

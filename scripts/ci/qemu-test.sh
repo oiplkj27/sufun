@@ -4,36 +4,35 @@
 #
 #   Test 1: live USB boots to the Plasma desktop, checks the Windows 11-style layout,
 #           prints RAM numbers
-#   Test 2: the installer installs SUFUN to an empty 64 GB virtual disk (test mode)
+#   Test 2: the installer installs SUFUN in "내부 저장장치에 설치" mode to an empty
+#           64 GB virtual disk (test mode). An empty microSD card is attached too:
+#           the installer must pick the internal disk by itself, never the card.
 #   Test 3: the installed system boots, shows the login screen, checks itself, then
 #           logs in (test disk only) and checks the Korean desktop
-#           (SUFUN boot entry + Plymouth, version, zram, earlyoom, firewall, fstab)
+#           (SUFUN boot entry + Plymouth, version, zram, earlyoom, firewall, fstab).
+#           Then the Windows restore test, with a DUMMY Windows ISO (same layout,
+#           no Microsoft files, see make-dummy-windows-iso.sh): WININSTALL partition
+#           (SUFUN shrunk), install.wim split, "Windows Setup" entry last, BootNext.
+#   Test 4: the firmware starts the "Windows Setup" entry (BootNext) from the
+#           WININSTALL partition (the dummy ISO's boot file + a test kernel option)
+#   Test 5: the installed system again: sufun-windows-restore --remove puts back
+#           the partition sizes and removes the entry
 # Success is read from the serial console ("SUFUN-TEST: ..." lines written by
 # sufun-selftest), not from fixed waiting times. Screenshots are saved every
 # 10 seconds for the first 3 minutes, then every minute (QEMU monitor
 # "screendump"), plus the serial logs: upload <output-dir>. The installed system
 # also gets one about every 2 seconds for its first 20 seconds (boot splash).
 #
-# Needs: qemu-system-x86_64, qemu-img, OVMF (UEFI firmware), xorriso, python3.
+# Needs: qemu-system-x86_64, qemu-img, OVMF (UEFI firmware), xorriso, python3, wimtools.
 # Uses KVM when /dev/kvm is usable, otherwise slow software emulation with longer timeouts.
 set -uo pipefail
 
 ISO="$(realpath "${1:?iso}")"; WANT="${2:?version}"; OUT="${3:?output dir}"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 mkdir -p "$OUT"; OUT="$(realpath "$OUT")"
 cd "$OUT" || exit 1
-
-if [[ -r /dev/kvm && -w /dev/kvm ]]; then
-  ACCEL=(-accel kvm -cpu host); F=1; echo "Using KVM"
-else
-  ACCEL=(-accel tcg -cpu max); F=4; echo "No KVM: software emulation, timeouts x$F"
-fi
-
-# UEFI firmware (Ubuntu: package "ovmf", Arch: "edk2-ovmf")
-for c in /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/edk2/x64/OVMF_CODE.4m.fd /usr/share/OVMF/OVMF_CODE.fd; do
-  [[ -f $c ]] && { CODE=$c; break; }
-done
-VARS_SRC=${CODE/CODE/VARS}
-[[ -n ${CODE:-} && -f $VARS_SRC ]] || { echo "OVMF firmware not found" >&2; exit 1; }
+# shellcheck source=qemu-common.sh
+source "$HERE/qemu-common.sh"
 cp "$VARS_SRC" vars.fd
 
 # Kernel + initramfs from the ISO: test 1 and 2 add kernel options
@@ -47,94 +46,46 @@ LABEL=$(blkid -s LABEL -o value "$ISO" 2>/dev/null || xorriso -indev "$ISO" -pvd
 LIVEOPTS="archisobasedir=arch archisolabel=$LABEL console=ttyS0,115200 console=tty0"
 
 qemu-img create -f qcow2 disk.qcow2 64G >/dev/null
-
-monitor() {  # monitor <socket> <command>   (QEMU human monitor)
-  python3 - "$1" "$2" <<'PY'
-import socket, sys, time
-s = socket.socket(socket.AF_UNIX); s.settimeout(5)
-try:
-    s.connect(sys.argv[1]); time.sleep(0.2); s.recv(4096)
-    s.sendall((sys.argv[2] + "\n").encode()); time.sleep(1)
-except Exception as e:
-    print("monitor:", e, file=sys.stderr)
-PY
-}
-
-# run_vm <name> <timeout-seconds> <success-regex> <fail-regex> <qemu args...>
-# FAST_SHOTS=<seconds> run_vm ...: screenshots about every 2 s for that long first
-# Also about every 2 s for 40 s after the VM prints "SUFUN-TEST: LOGIN-START"
-# (the installed-system test logging in: the SUFUN login splash appears then).
-run_vm() {
-  local name=$1 timeout=$(( $2 * F )) ok=$3 bad=$4; shift 4
-  local fast=${FAST_SHOTS:-0} next_shot=10 burst=0 named=0 n label
-  (( fast > 0 )) && next_shot=2
-  local log="$name-serial.log" sock="$OUT/$name.sock" el start=$SECONDS result=TIMEOUT
-  : > "$log"
-  qemu-system-x86_64 "${ACCEL[@]}" -machine q35 -smp 2 -m 4096 \
-    -drive if=pflash,format=raw,readonly=on,file="$CODE" \
-    -drive if=pflash,format=raw,file="$OUT/vars.fd" \
-    -device virtio-vga -display none \
-    -netdev user,id=n0 -device virtio-net-pci,netdev=n0 \
-    -serial file:"$log" -monitor unix:"$sock",server,nowait \
-    "$@" &
-  local pid=$!
-  echo "== $name started (timeout ${timeout}s)"
-  while kill -0 $pid 2>/dev/null; do
-    el=$((SECONDS - start))
-    if (( burst == 0 )) && grep -q 'SUFUN-TEST: LOGIN-START' "$log"; then
-      burst=$((el + 40)); next_shot=$el
-    fi
-    if (( el < fast || el < burst )); then sleep 1; else sleep 2; fi
-    # "SUFUN-TEST: SHOT <label>": the VM asks for a screenshot now, saved as
-    # <name>-<label>.png (e.g. 3-installed-logout.png, the Plasma logout screen).
-    n=$(grep -c 'SUFUN-TEST: SHOT ' "$log" || true)
-    if (( n > named )); then
-      named=$n
-      label=$(grep -o 'SUFUN-TEST: SHOT [a-z0-9-]*' "$log" | tail -n 1 | awk '{print $3}')
-      monitor "$sock" "screendump $name-$label.png -f png"
-    fi
-    # Screenshots: every 10 s for the first 3 minutes (boot splash, login screen,
-    # desktop appearing), then every minute. File name = seconds since start,
-    # e.g. 3-installed-t0040.png = 40 s after the virtual PC was switched on.
-    el=$((SECONDS - start))
-    if (( el >= next_shot )); then
-      monitor "$sock" "screendump $name-t$(printf %04d "$el").png -f png"
-      if (( el < fast || el < burst )); then next_shot=$((el + 2))
-      elif (( el < 180 )); then next_shot=$((el + 10)); else next_shot=$((el + 60)); fi
-    fi
-    if grep -qE "$ok" "$log"; then result=OK; break; fi
-    if grep -qE "$bad" "$log"; then result=FAILED; break; fi
-    (( SECONDS - start > timeout )) && break
-  done
-  monitor "$sock" "screendump $name-final.png -f png"
-  # Installer and installed-system tests power off by themselves; give them a moment.
-  for _ in 1 2 3 4 5 6; do kill -0 $pid 2>/dev/null || break; sleep 5; done
-  kill $pid 2>/dev/null; wait $pid 2>/dev/null
-  grep -q 'SUFUN-TEST' "$log" && grep 'SUFUN-TEST' "$log" | sed "s/^/   [$name] /"
-  echo "== $name: $result"
-  [[ $result == OK ]]
-}
+# Empty 1 GiB microSD card (QEMU SD cards must be a power of 2 in size)
+truncate -s 1G sdblank.img
+SDCARD=(-device sdhci-pci -device sd-card,drive=sd0 -drive id=sd0,if=none,format=raw,file=sdblank.img)
+# Dummy Windows 11 ISO for the restore test (no Microsoft files)
+bash "$HERE/make-dummy-windows-iso.sh" "$ISO" "$LABEL" winiso.iso || { echo "could not make the dummy Windows ISO" >&2; exit 1; }
 
 fail=0
 run_vm 1-live 1200 'SUFUN-TEST: LIVE-DESKTOP-OK' 'SUFUN-TEST: LIVE-DESKTOP-TIMEOUT' \
   -cdrom "$ISO" -kernel vmlinuz -initrd initrd.img -append "$LIVEOPTS sufun.test=live" || fail=1
 
 run_vm 2-install 3600 'SUFUN-TEST: INSTALL-DONE' 'SUFUN-TEST: INSTALL-FAILED' \
-  -cdrom "$ISO" -drive file=disk.qcow2,if=virtio,format=qcow2 \
+  -cdrom "$ISO" -drive file=disk.qcow2,if=virtio,format=qcow2 "${SDCARD[@]}" \
   -kernel vmlinuz -initrd initrd.img -append "$LIVEOPTS sufun.test=install" || fail=1
+if ! grep -qE 'SUFUN-TEST: TARGET /dev/vda[[:space:]]*$' 2-install-serial.log; then
+  echo "the installer did not pick the internal disk /dev/vda"; fail=1
+fi
 
 if (( ! fail )); then
   # Boot from the virtual disk only, like a real start: firmware -> systemd-boot -> SUFUN.
   # Extra screenshots in the first 20 s catch the SUFUN boot splash (Plymouth),
   # and after LOGIN-START the SUFUN login splash (ksplash).
   FAST_SHOTS=20 run_vm 3-installed 1200 'SUFUN-TEST: INSTALLED-DONE' 'SUFUN-TEST: NEVER' \
-    -drive file=disk.qcow2,if=virtio,format=qcow2 || fail=1
-  log=3-installed-serial.log
-  if grep -q 'SUFUN-TEST: FAIL' "$log"; then echo "Some checks failed on the installed system"; fail=1; fi
-  got=$(sed -n 's/.*SUFUN-TEST: VERSION \([^[:space:]]*\).*/\1/p' "$log" | head -n1)
-  if [[ $got != "$WANT" ]]; then echo "sufun-base version is '$got', expected '$WANT'"; fail=1; fi
+    -drive file=disk.qcow2,if=virtio,format=qcow2 \
+    -drive file=winiso.iso,media=cdrom,readonly=on || fail=1
+  check_serial 3-installed "$WANT" || fail=1
+  grep -q 'SUFUN-TEST: RESTORE-PREPARED' 3-installed-serial.log || { echo "Windows restore: prepare did not finish"; fail=1; }
 fi
 
-rm -f disk.qcow2 vmlinuz initrd.img ucode.img ./*.sock
+if (( ! fail )); then
+  # The firmware's BootNext (set by sufun-windows-restore) must start the
+  # "Windows Setup" entry. The dummy boot file there starts the live kernel with
+  # sufun.test=winsetup; the live ISO is attached for its root file system.
+  run_vm 4-winsetup 600 'SUFUN-TEST: WINSETUP-BOOT-OK' 'SUFUN-TEST: BOOTED' \
+    -drive file=disk.qcow2,if=virtio,format=qcow2 -cdrom "$ISO" || fail=1
+  # Then a normal start again: the installed system undoes the restore preparation.
+  run_vm 5-restore-cleanup 900 'SUFUN-TEST: RESTORE-CLEANUP-DONE' 'SUFUN-TEST: BOOTED installed' \
+    -drive file=disk.qcow2,if=virtio,format=qcow2 || fail=1
+  check_serial 5-restore-cleanup || fail=1
+fi
+
+rm -f disk.qcow2 sdblank.img winiso.iso vmlinuz initrd.img ucode.img ./*.sock
 (( fail )) && { echo "TESTS FAILED"; exit 1; }
 echo "ALL TESTS PASSED"

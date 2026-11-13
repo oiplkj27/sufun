@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# SD-card installs only ("SD카드에 설치 (윈도우 유지)"):
+# the Surface firmware cannot start anything from the microSD card, so a small
+# "boot stage" lives on the INTERNAL disk (next to Windows):
+#   <boot stage>/EFI/SUFUN/systemd-bootx64.efi     boot menu
+#   <boot stage>/EFI/SUFUN/sd/                     kernel, initramfs, microcode
+#   <boot stage>/loader/entries/sufun-sd.conf      menu entry (written by the installer)
+# The system itself (/, /boot) is on the card. This script copies the kernel,
+# initramfs and microcode from /boot on the card to the boot stage, so they
+# always match the kernel modules on the card.
+#
+# Runs automatically: pacman hook 99-sufun-boot-stage.hook (kernel, microcode,
+# systemd-boot, initramfs changes) and mkinitcpio's post hook (after every
+# "mkinitcpio -P"). Does nothing on normal installs (no /etc/sufun/boot-stage.conf).
+#
+# Never touches anything on the internal disk except EFI/SUFUN/ and the SUFUN
+# loader entries.
+set -uo pipefail
+
+CONF=/etc/sufun/boot-stage.conf
+[[ -f $CONF ]] || exit 0
+# Read KEY=value lines (no "source": the file is data, not a script)
+conf() { sed -n "s/^$1=//p" "$CONF" | tail -n 1; }
+UUID=$(conf BOOT_STAGE_UUID)
+MNT=$(conf BOOT_STAGE_MOUNT); MNT=${MNT:-/efi}
+SUB=$(conf BOOT_STAGE_DIR);   SUB=${SUB:-EFI/SUFUN/sd}
+
+fail() { printf '\e[1;31mSUFUN 부팅 파일 오류: %s\e[0m\n' "$1" >&2; exit 1; }
+[[ $EUID -eq 0 ]] || fail "관리자(root)로 실행해야 합니다."
+[[ -n $UUID ]] || fail "$CONF 에 BOOT_STAGE_UUID 가 없습니다."
+[[ $SUB == EFI/SUFUN/* && $SUB != *..* ]] || fail "BOOT_STAGE_DIR 값이 이상합니다: $SUB"
+
+# The boot stage partition must be mounted (fstab: /efi, nofail). Try once.
+if ! mountpoint -q "$MNT"; then
+  mount "$MNT" 2>/dev/null || mount UUID="$UUID" "$MNT" 2>/dev/null \
+    || fail "내부 저장장치의 SUFUN 부팅 파티션(UUID $UUID)을 $MNT 에 연결할 수 없습니다.
+커널이 업데이트되었다면 다음 부팅이 실패할 수 있습니다. 'sudo /usr/lib/sufun/sync-boot-stage' 를 다시 실행하세요."
+fi
+got=$(findmnt -no UUID "$MNT" 2>/dev/null)
+[[ ${got^^} == "${UUID^^}" ]] || fail "$MNT 에 다른 파티션이 연결되어 있습니다 ($got, 예상 $UUID)."
+
+DST="$MNT/$SUB"
+mkdir -p "$DST" || fail "$DST 폴더를 만들 수 없습니다."
+
+avail_bytes() { df -B1 --output=avail "$MNT" | tail -n 1 | tr -d ' '; }
+size_of() { stat -c %s "$1" 2>/dev/null || echo 0; }
+
+# copy_file <source> <target>: only if different; through a temporary name so a
+# full disk or a power cut never leaves a half-written kernel behind.
+copy_file() {
+  local src=$1 dst=$2 need
+  [[ -f $src ]] || return 0
+  cmp -s "$src" "$dst" && return 0
+  need=$(( $(size_of "$src") - $(size_of "$dst") + 4*1024*1024 ))
+  (( $(avail_bytes) >= need )) \
+    || fail "부팅 파티션에 공간이 부족합니다 ($(basename "$src") 복사 불가). df -h $MNT 로 확인하세요."
+  cp -f "$src" "$dst.new" && sync -f "$dst.new" && mv -f "$dst.new" "$dst" \
+    || { rm -f "$dst.new"; fail "$(basename "$src") 을(를) $DST 에 복사하지 못했습니다."; }
+  echo "SUFUN: 부팅 파일 업데이트됨: $SUB/$(basename "$dst")"
+}
+
+copy_file /boot/vmlinuz-linux-surface       "$DST/vmlinuz-linux-surface"
+copy_file /boot/initramfs-linux-surface.img "$DST/initramfs-linux-surface.img"
+copy_file /boot/intel-ucode.img             "$DST/intel-ucode.img"
+copy_file /usr/lib/systemd/boot/efi/systemd-bootx64.efi "$MNT/EFI/SUFUN/systemd-bootx64.efi"
+
+# Fallback initramfs (all drivers, ~100 MB): only if there is room for it.
+ENTRIES="$MNT/loader/entries"
+FB=/boot/initramfs-linux-surface-fallback.img
+if [[ -f $FB ]] && (( $(avail_bytes) + $(size_of "$DST/initramfs-linux-surface-fallback.img") > $(size_of "$FB") + 64*1024*1024 )); then
+  copy_file "$FB" "$DST/initramfs-linux-surface-fallback.img"
+  if [[ -f $ENTRIES/sufun-sd.conf ]]; then
+    sed -e 's/^title .*/title   SUFUN (microSD, fallback)/' \
+        -e 's/initramfs-linux-surface\.img/initramfs-linux-surface-fallback.img/' \
+        -e '/^options/{s/ quiet//;s/ splash//}' \
+        "$ENTRIES/sufun-sd.conf" > "$ENTRIES/sufun-sd-fallback.conf.new" \
+      && mv -f "$ENTRIES/sufun-sd-fallback.conf.new" "$ENTRIES/sufun-sd-fallback.conf"
+  fi
+else
+  rm -f "$DST/initramfs-linux-surface-fallback.img" "$ENTRIES/sufun-sd-fallback.conf"
+fi
+sync -f "$DST" 2>/dev/null || sync
+exit 0

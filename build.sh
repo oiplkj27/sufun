@@ -65,7 +65,8 @@ log "Building package list"
 sed -i -E '/^(linux|broadcom-wl)$/d' "$PROFILE/packages.x86_64"
 # sufun-base depends on every desktop package; listing desktop.txt too makes the
 # explicit driver/provider choices (vulkan-intel, lib32-mesa, ...) count here as well.
-{ echo sufun-base; strip_list "$HERE/packages/desktop.txt"; } >> "$PROFILE/packages.x86_64"
+# fio: live ISO only, for the installer's microSD speed test (4K random writes).
+{ echo sufun-base; echo fio; strip_list "$HERE/packages/desktop.txt"; } >> "$PROFILE/packages.x86_64"
 sort -u -o "$PROFILE/packages.x86_64" "$PROFILE/packages.x86_64"
 
 log "Pointing bootloaders and mkinitcpio at linux-surface, naming the menus SUFUN"
@@ -131,6 +132,27 @@ EOF
 
 log "Running mkarchiso (this takes a while)"
 mkarchiso -v -w "$WORK/build" -o "$OUT" "$PROFILE"
+
+log "Checking the live ISO for microSD boot (Surface Go 3 card reader)"
+# The live system must start from a microSD card (boot stage on the internal disk,
+# see scripts/windows/sufun-sd-setup.ps1): the SD drivers and file systems from
+# airootfs/etc/mkinitcpio.conf.d/zz-sufun-sd.conf must really be in the initramfs.
+ISODIR="$WORK/build/iso"
+INITRD="$ISODIR/arch/boot/x86_64/initramfs-linux-surface.img"
+[[ -f $INITRD ]] || die "live initramfs not found: $INITRD"
+INITRD_FILES=$(lsinitcpio "$INITRD") || die "lsinitcpio failed on $INITRD"
+# Module file names use "_" or "-" (sdhci-pci.ko, nls_iso8859-1.ko): match both.
+# A module built into the kernel itself (modules.builtin) needs no file.
+BUILTIN=$(cat "$WORK"/build/x86_64/airootfs/usr/lib/modules/*/modules.builtin 2>/dev/null || true)
+for m in rtsx_pci rtsx_pci_sdmmc mmc_block mmc_core sdhci sdhci_pci vfat exfat nls_cp437 nls_iso8859_1; do
+  grep -qE "/${m//_/[-_]}\.ko(\.(zst|xz|gz))?$" <<< "$INITRD_FILES" \
+    || grep -qE "/${m//_/[-_]}\.ko$" <<< "$BUILTIN" \
+    || die "module $m is missing from the live initramfs (microSD boot would fail)"
+done
+# The Windows setup script copies EFI/BOOT/BOOTx64.EFI as the boot menu and
+# writes systemd-boot entries for it: it must be systemd-boot.
+grep -aq 'systemd-boot' "$ISODIR/EFI/BOOT/BOOTx64.EFI" \
+  || die "EFI/BOOT/BOOTx64.EFI on the ISO is not systemd-boot (sufun-sd-setup.ps1 needs it)"
 
 log "Done:"
 ls -lh "$OUT"/*.iso

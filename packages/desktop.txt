@@ -75,6 +75,8 @@ udisks2                  # auto-mount in Dolphin and the device notifier
 ntfs-3g                  # NTFS drives from Windows (fallback driver; kernel ntfs3 is used first)
 exfatprogs               # format/check exFAT
 dosfstools               # format/check FAT32 (also on the live USB)
+efibootmgr               # firmware boot entries: "Windows Setup" (sufun-windows-restore)
+wimlib                   # splits a big Windows install.wim for FAT32 (sufun-windows-restore)
 
 # --- Running Windows programs ---
 wine                     # 64-bit + 32-bit apps (WoW64 build: no lib32 packages needed)

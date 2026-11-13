@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Windows Restore
+Name[ko]=Windows 복원
+Comment=Go back to Windows without a USB drive (uses a Windows 11 ISO you download)
+Comment[ko]=USB 없이 Windows로 되돌리기 (직접 내려받은 Windows 11 ISO 사용)
+Exec=/usr/bin/sufun-windows-restore
+Icon=sufun-logo
+Terminal=false
+Categories=System;

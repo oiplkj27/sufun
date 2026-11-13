@@ -1,0 +1,427 @@
+#!/usr/bin/env bash
+# Windows 복원: go back to Windows WITHOUT a USB drive (this Surface Go 3 cannot
+# boot from USB). You download a Windows 11 ISO yourself from microsoft.com;
+# nothing from Microsoft is bundled or downloaded here.
+#
+# What --prepare does (internal disk only, the microSD card is not used: the
+# Surface firmware cannot start anything from it):
+#   1. makes room: uses free space on the internal disk, or shrinks the SUFUN
+#      btrfs partition (online, nothing is deleted)
+#   2. creates a FAT32 partition "WININSTALL" and copies the ISO contents to it
+#      (a too-big sources/install.wim is split into install.swm parts for FAT32)
+#   3. adds a firmware boot entry "Windows Setup" at the END of the boot order
+#      (SUFUN stays the default). Its boot files are the ISO's own
+#      \efi\boot\bootx64.efi + \efi\microsoft\boot\bcd on that partition, so
+#      Windows Setup starts from RAM (boot.wim) and reads install.wim/.swm from it.
+# Then in Windows Setup: delete ONLY the SUFUN partitions (EFI 1 GB + sufun-root),
+# keep "WININSTALL", install to the unallocated space. See docs/windows-restore-ko.md.
+#
+#   sufun-windows-restore                     simple window (Korean), for people
+#   sufun-windows-restore --prepare <iso>     (root) steps 1-3     [--yes] [--gui]
+#   sufun-windows-restore --reboot-to-setup   (root) start Windows Setup once, now
+#   sufun-windows-restore --remove            (root) undo: entry, partition, SUFUN size back
+#   sufun-windows-restore --status            what is prepared
+#   --boot-test-create / --boot-test-remove / --boot-test-status   (root)
+#       installer's "restore dry-run" while Windows still exists: a "Windows Setup"
+#       firmware entry that starts the existing Windows Boot Manager, to check the
+#       entry appears in this Surface's boot menu and starts.
+set -uo pipefail
+
+STATE=/var/lib/sufun/windows-restore.conf
+LABEL=WININSTALL                  # FAT32 label (max 11 letters)
+ENTRY="Windows Setup"             # firmware menus have no Korean font: ASCII name
+LOADER='\efi\boot\bootx64.efi'
+SPLIT_MB=3800                     # FAT32: files must be < 4 GiB
+T="Windows 복원"
+ISO_MNT=/run/sufun-winiso
+DST_MNT=/run/sufun-wininst
+ROOT_TMP=/run/sufun-root-tmp
+
+GUI=0 YES=0
+for a in "$@"; do case "$a" in --gui) GUI=1 ;; --yes) YES=1 ;; esac; done
+
+fail() {
+  printf '\e[1;31m오류: %s\e[0m\n' "$1" >&2
+  (( GUI )) && printf 'SUFUN-ERROR: %s\n' "${1//$'\n'/ }"
+  cleanup_mounts; exit 1
+}
+info() { printf '\e[1;36m==> %s\e[0m\n' "$*"; }
+need_root() { [[ $EUID -eq 0 ]] || fail "관리자 권한이 필요합니다: sudo $0 $*"; }
+cleanup_mounts() {
+  mountpoint -q "$DST_MNT" 2>/dev/null && umount "$DST_MNT"
+  mountpoint -q "$ISO_MNT" 2>/dev/null && umount "$ISO_MNT"
+  mountpoint -q "$ROOT_TMP" 2>/dev/null && umount "$ROOT_TMP"
+  return 0
+}
+is_test_vm() { grep -q 'sufun\.test=' /proc/cmdline && [[ $(cat /sys/class/dmi/id/sys_vendor 2>/dev/null) == QEMU ]]; }
+
+# --- disks (same rules as the installer) ---
+parent_disk() { local k; k=$(lsblk -no PKNAME "$1" 2>/dev/null | head -n1); [[ -n $k ]] && echo "/dev/$k" || echo "$1"; }
+partdev() { [[ $1 =~ [0-9]$ ]] && echo "${1}p$2" || echo "$1$2"; }
+partnum() { cat "/sys/class/block/${1#/dev/}/partition" 2>/dev/null; }
+disk_kind() {  # internal | sd | usb | other
+  local d=${1#/dev/}
+  case $d in sr*|loop*|zram*|ram*|*boot[0-9]|*rpmb) echo other; return ;; esac
+  if [[ $d == mmcblk* ]]; then
+    case $(cat "/sys/block/$d/device/type" 2>/dev/null) in MMC) echo internal ;; SD) echo sd ;; *) echo other ;; esac
+    return
+  fi
+  [[ $(lsblk -dno TRAN "$1" 2>/dev/null | tr -d ' ') == usb ]] && { echo usb; return; }
+  [[ $(cat "/sys/block/$d/removable" 2>/dev/null) == 1 ]] && { echo other; return; }
+  echo internal
+}
+internal_disks() {
+  local d
+  for d in $(lsblk -dpno NAME | grep -vE '/(loop|zram|sr|ram)[0-9]+$|boot[0-9]+$|rpmb$'); do
+    [[ $(disk_kind "$d") == internal ]] && echo "$d"
+  done
+  return 0
+}
+# Partitions (on internal disks) with a given property: parts_where <lsblk column> <value>
+parts_where() {
+  local d
+  for d in $(internal_disks); do
+    lsblk -pnlo NAME,TYPE,"$1" "$d" | awk -v v="$2" '$2 == "part" && $3 == v {print $1}'
+  done
+}
+windows_present() { [[ -n $(parts_where FSTYPE ntfs) ]]; }
+free_area() {  # free_area <disk>: "<start> <sectors>" of the biggest unpartitioned area
+  sfdisk -F "$1" 2>/dev/null | awk '$1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ {
+      if ($3 > best) { best = $3; s = $1 } } END { if (best) print s, best }'
+}
+partnum_at() { sfdisk -d "$1" | sed -n "s|^\(/dev/[^ ]*\) *: *start= *$2,.*|\1|p" | grep -o '[0-9]*$'; }
+state() { sed -n "s/^$1=//p" "$STATE" 2>/dev/null | tail -n1; }
+
+# --- firmware entries ---
+entries_named() {  # Boot numbers of entries called "Windows Setup"
+  efibootmgr 2>/dev/null | sed -n "s/^Boot\([0-9A-Fa-f]\{4\}\)\*\{0,1\} $ENTRY\([[:space:]].*\)\{0,1\}$/\1/p"
+}
+test_entries() {   # "Windows Setup" entries that start the existing Windows (dry-run)
+  efibootmgr -v 2>/dev/null | grep -E "^Boot[0-9A-Fa-f]{4}\*? $ENTRY[[:space:]]" | grep -i 'bootmgfw\.efi' \
+    | sed -n 's/^Boot\([0-9A-Fa-f]\{4\}\).*/\1/p'
+}
+add_entry_last() {  # add_entry_last <disk> <partnum> <loader>: prints the new Boot number
+  local order old n num=
+  order=$(efibootmgr | sed -n 's/^BootOrder: //p')
+  old=$(efibootmgr | sed -n 's/^Boot\([0-9A-Fa-f]\{4\}\).*/\1/p')
+  # --create-only: the new entry is NOT put first; then append it at the end.
+  efibootmgr --create-only --disk "$1" --part "$2" --label "$ENTRY" --loader "$3" >/dev/null \
+    || fail "펌웨어 부팅 항목을 만들 수 없습니다 (efibootmgr)."
+  for n in $(entries_named); do grep -qixF "$n" <<< "$old" || { num=$n; break; }; done
+  [[ -n $num ]] || fail "새 부팅 항목을 찾을 수 없습니다."
+  efibootmgr --bootorder "${order:+$order,}$num" >/dev/null || fail "부팅 순서를 바꿀 수 없습니다."
+  echo "$num"
+}
+delete_entry() { efibootmgr --bootnum "$1" --delete-bootnum >/dev/null 2>&1; }
+
+# =========================================================================
+# --prepare <iso>
+# =========================================================================
+prepare() {
+  need_root --prepare
+  local iso=${1:-}
+  [[ -n $iso && ( -f $iso || -b $iso ) ]] || fail "Windows ISO 파일을 찾을 수 없습니다: ${iso:-(없음)}"
+  [[ -f $STATE ]] && fail "이미 준비되어 있습니다. 먼저 '준비한 것 지우기'(--remove)를 하세요."
+  windows_present && fail "이 Surface에는 아직 Windows가 있습니다 (SD카드 설치). Windows 복원은 필요 없습니다.
+카드를 빼고 켜면 Windows가 시작됩니다. SUFUN 부팅 항목을 없애려면 Windows에서 sufun-sd-setup.ps1 -Uninstall 을 실행하세요."
+  [[ -n $(parts_where LABEL "$LABEL") ]] && fail "'$LABEL' 파티션이 이미 있습니다. 먼저 --remove 를 실행하세요."
+
+  info "ISO 확인 중"
+  mkdir -p "$ISO_MNT"
+  mount -o ro,loop "$iso" "$ISO_MNT" 2>/dev/null || mount -o ro "$iso" "$ISO_MNT" 2>/dev/null \
+    || fail "ISO를 열 수 없습니다. 파일이 손상되었을 수 있습니다."
+  local f wim=
+  for f in efi/boot/bootx64.efi efi/microsoft/boot/bcd sources/boot.wim; do
+    [[ -n $(find "$ISO_MNT" -ipath "$ISO_MNT/$f" -print -quit) ]] \
+      || fail "Windows 설치 ISO가 아닙니다 ($f 없음). microsoft.com 에서 받은 Windows 11 ISO를 쓰세요."
+  done
+  wim=$(find "$ISO_MNT" -ipath "$ISO_MNT/sources/install.wim" -print -quit)
+  [[ -n $wim ]] || wim=$(find "$ISO_MNT" -ipath "$ISO_MNT/sources/install.esd" -print -quit)
+  [[ -n $wim ]] || fail "ISO에 sources/install.wim (또는 install.esd)이 없습니다."
+
+  # Split install.wim for FAT32 when it is 4 GiB or bigger (test VM: forced, small parts)
+  local split=$SPLIT_MB force_split=0
+  if [[ -n ${SUFUN_WIM_SPLIT_MB:-} ]] && is_test_vm; then split=$SUFUN_WIM_SPLIT_MB; force_split=1; fi
+  local wim_size; wim_size=$(stat -c %s "$wim")
+  local do_split=0
+  if (( force_split )) || (( wim_size >= 4294967295 )); then
+    [[ $wim == *.wim || $wim == *.WIM ]] || fail "install.esd 가 4 GB보다 커서 FAT32에 넣을 수 없습니다."
+    command -v wimlib-imagex >/dev/null || fail "wimlib-imagex 가 없습니다 (패키지 wimlib)."
+    do_split=1
+  fi
+  # Any OTHER file over the FAT32 limit cannot be copied.
+  local big; big=$(find "$ISO_MNT" -type f -size +4194303k ! -samefile "$wim" -print -quit)
+  [[ -z $big ]] || fail "FAT32에 넣을 수 없는 큰 파일이 있습니다: ${big#$ISO_MNT/}"
+
+  local bytes need_gib
+  bytes=$(du -sb --apparent-size "$ISO_MNT" | cut -f1)
+  need_gib=$(( (bytes + 512 * 1024 * 1024 + 1073741823) / 1073741824 ))
+
+  # --- where: the internal disk with SUFUN on it ---
+  local rootsrc rootpart= disk= mp= ss
+  rootsrc=$(findmnt -no SOURCE / | sed 's/\[.*//')
+  if [[ -b $rootsrc && $(disk_kind "$(parent_disk "$rootsrc")") == internal ]] && [[ $(findmnt -no FSTYPE /) == btrfs ]]; then
+    rootpart=$rootsrc; mp=/
+  else
+    rootpart=$(parts_where LABEL sufun-root | head -n1)
+  fi
+  if [[ -n $rootpart ]]; then disk=$(parent_disk "$rootpart"); else disk=$(internal_disks | head -n1); fi
+  [[ -b $disk ]] || fail "내부 저장장치를 찾을 수 없습니다."
+  ss=$(blockdev --getss "$disk")
+  local need_sec=$(( need_gib * 1073741824 / ss ))
+  local label_type ptype
+  label_type=$(sfdisk -d "$disk" | sed -n 's/^label: *//p')
+  if [[ $label_type == gpt ]]; then ptype=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7; else ptype=0c; fi
+
+  local fstart fsec start shrunk=0 rpn= old_sec=
+  read -r fstart fsec <<< "$(free_area "$disk")"
+  if [[ -n ${fsec:-} ]] && (( fsec >= need_sec + 2048 )); then
+    start=$(( (fstart + 2047) / 2048 * 2048 ))
+    info "내부 저장장치의 빈 공간을 씁니다 (${need_gib} GB)"
+  else
+    [[ -n $rootpart ]] || fail "내부 저장장치에 빈 공간이 없고, 줄일 SUFUN 파티션도 찾을 수 없습니다."
+    # Shrink the SUFUN btrfs partition by need_gib (online; files are moved, not deleted).
+    if [[ -z $mp ]]; then
+      mkdir -p "$ROOT_TMP"; mount -o subvolid=5 "$rootpart" "$ROOT_TMP" || fail "SUFUN 파티션을 열 수 없습니다."
+      mp=$ROOT_TMP
+    fi
+    local free_b
+    free_b=$(btrfs filesystem usage -b "$mp" 2>/dev/null | awk '/Free \(estimated\)/ {print $3; exit}')
+    (( ${free_b:-0} >= (need_gib + 3) * 1073741824 )) \
+      || fail "SUFUN에 빈 공간이 부족합니다 ($(( ${free_b:-0} / 1073741824 )) GB 남음, $(( need_gib + 3 )) GB 필요). 파일을 정리한 뒤 다시 하세요."
+    rpn=$(partnum "$rootpart")
+    old_sec=$(cat "/sys/class/block/${rootpart#/dev/}/size")      # always 512-byte units
+    old_sec=$(( old_sec * 512 / ss ))
+    local rstart; rstart=$(( $(cat "/sys/class/block/${rootpart#/dev/}/start") * 512 / ss ))
+    local new_sec=$(( (old_sec - need_sec - 2048) / 2048 * 2048 ))
+    local new_fs=$(( new_sec * ss - 64 * 1024 * 1024 ))
+    info "SUFUN 파티션을 ${need_gib} GB 줄이는 중 (파일은 지우지 않습니다, 몇 분 걸릴 수 있습니다)"
+    btrfs filesystem resize "$new_fs" "$mp" >/dev/null || fail "SUFUN 파일 시스템을 줄이지 못했습니다."
+    echo ",$new_sec" | sfdisk -N "$rpn" --no-reread --no-tell-kernel -q "$disk" \
+      || { btrfs filesystem resize max "$mp"; fail "SUFUN 파티션 크기를 바꾸지 못했습니다."; }
+    partx -u --nr "$rpn" "$disk" || true
+    start=$(( rstart + new_sec ))
+    shrunk=1
+  fi
+  [[ $mp == "$ROOT_TMP" ]] && umount "$ROOT_TMP"
+
+  info "'$LABEL' 파티션 만드는 중"
+  echo "$start,$need_sec,$ptype" | sfdisk --append --no-reread --no-tell-kernel -q "$disk" \
+    || fail "파티션을 만들지 못했습니다."
+  local pn; pn=$(partnum_at "$disk" "$start")
+  [[ -n $pn ]] || fail "새 파티션을 찾을 수 없습니다."
+  [[ $label_type == gpt ]] && sfdisk --part-label "$disk" "$pn" "$LABEL" --no-reread --no-tell-kernel -q >/dev/null 2>&1
+  partx -a --nr "$pn" "$disk" 2>/dev/null || partx -u --nr "$pn" "$disk" || true
+  udevadm settle
+  local part; part=$(partdev "$disk" "$pn")
+  for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -b $part ]] && break; sleep 1; done
+  [[ -b $part ]] || fail "$part 이(가) 나타나지 않습니다."
+  # Remember everything now, so --remove can undo even a half-finished run.
+  mkdir -p "${STATE%/*}"
+  printf 'DISK=%s\nPART=%s\nPARTNUM=%s\nROOT_PART=%s\nROOT_PARTNUM=%s\nSHRUNK=%s\nOLD_ROOT_SECTORS=%s\n' \
+    "$disk" "$part" "$pn" "$rootpart" "$rpn" "$shrunk" "$old_sec" > "$STATE"
+  mkfs.fat -F32 -n "$LABEL" "$part" >/dev/null || fail "FAT32로 포맷하지 못했습니다."
+
+  info "Windows 설치 파일 복사 중 (10-20분)"
+  mkdir -p "$DST_MNT"; mount "$part" "$DST_MNT" || fail "새 파티션을 열 수 없습니다."
+  ( cd "$ISO_MNT" && find . -type d -print0 ) | while IFS= read -r -d '' f; do mkdir -p "$DST_MNT/$f"; done
+  ( cd "$ISO_MNT" && find . -type f -print0 ) | while IFS= read -r -d '' f; do
+    [[ "$ISO_MNT/${f#./}" -ef "$wim" ]] && (( do_split )) && continue
+    cp --no-preserve=all "$ISO_MNT/$f" "$DST_MNT/$f" || exit 1
+  done || fail "파일을 복사하지 못했습니다 (공간 부족?)."
+  if (( do_split )); then
+    info "install.wim 을 FAT32용으로 나누는 중 (install.swm, ${split} MB씩)"
+    wimlib-imagex split "$wim" "$DST_MNT/sources/install.swm" "$split" >/dev/null \
+      || fail "install.wim 을 나누지 못했습니다."
+  fi
+  echo "SUFUN: Windows installer files from $(basename "$iso"), $(date -I)" > "$DST_MNT/SUFUN-WININSTALL.txt"
+  sync; umount "$DST_MNT"; umount "$ISO_MNT"
+
+  info "펌웨어 부팅 항목 '$ENTRY' 추가 (부팅 순서 맨 끝, SUFUN이 기본)"
+  local n; for n in $(entries_named); do delete_entry "$n"; done
+  local num; num=$(add_entry_last "$disk" "$pn" "$LOADER")
+  echo "BOOTNUM=$num" >> "$STATE"
+  echo
+  echo "준비 완료: $part ($LABEL, ${need_gib} GB), 부팅 항목 Boot$num '$ENTRY'"
+  (( GUI )) && echo "SUFUN-OK: $num"
+  return 0
+}
+
+# =========================================================================
+# --remove: undo --prepare
+# =========================================================================
+remove() {
+  need_root --remove
+  local n disk part pn rpart rpn
+  for n in $(entries_named); do delete_entry "$n" && info "부팅 항목 Boot$n 삭제"; done
+  disk=$(state DISK) part=$(state PART) pn=$(state PARTNUM) rpart=$(state ROOT_PART) rpn=$(state ROOT_PARTNUM)
+  if [[ -z $part ]]; then          # no state file: look for the partition by its label
+    part=$(parts_where LABEL "$LABEL" | head -n1)
+    [[ -n $part ]] || part=$(parts_where PARTLABEL "$LABEL" | head -n1)
+    [[ -n $part ]] && { disk=$(parent_disk "$part"); pn=$(partnum "$part"); }
+  fi
+  if [[ -n $part && -n $disk && -n $pn ]]; then
+    [[ $(disk_kind "$disk") == internal ]] || fail "$part 은(는) 내부 저장장치가 아닙니다."
+    local lab; lab=$(lsblk -no LABEL "$part" 2>/dev/null)
+    [[ -z $lab || $lab == "$LABEL" ]] || fail "$part 의 이름이 $LABEL 이 아닙니다 ($lab). 지우지 않았습니다."
+    umount "$part" 2>/dev/null || true
+    info "'$LABEL' 파티션($part) 삭제"
+    wipefs -aq "$part" 2>/dev/null || true
+    sfdisk --delete --no-reread --no-tell-kernel -q "$disk" "$pn" || fail "파티션을 지우지 못했습니다."
+    partx -d --nr "$pn" "$disk" 2>/dev/null || true
+  fi
+  # Give the space back to SUFUN (only if the SUFUN partition is right before the free space)
+  [[ -n $rpart ]] || rpart=$(parts_where LABEL sufun-root | head -n1)
+  if [[ -n $rpart ]]; then
+    disk=$(parent_disk "$rpart"); rpn=$(partnum "$rpart")
+    echo ', +' | sfdisk -N "$rpn" --no-reread --no-tell-kernel -q "$disk" 2>/dev/null && partx -u --nr "$rpn" "$disk" || true
+    local mp; mp=$(findmnt -no TARGET --first-only "$rpart" 2>/dev/null)
+    [[ -z $mp ]] && mp=$(findmnt -rno TARGET -S "$rpart" | head -n1)
+    if [[ -z $mp ]]; then mkdir -p "$ROOT_TMP"; mount -o subvolid=5 "$rpart" "$ROOT_TMP" && mp=$ROOT_TMP; fi
+    if [[ -n $mp ]]; then
+      btrfs filesystem resize max "$mp" >/dev/null && info "SUFUN 파티션을 원래 크기로 되돌림"
+      [[ $mp == "$ROOT_TMP" ]] && umount "$ROOT_TMP"
+    fi
+  fi
+  rm -f "$STATE"
+  echo "되돌리기 완료."
+  (( GUI )) && echo "SUFUN-OK: removed"
+  return 0
+}
+
+reboot_to_setup() {
+  need_root --reboot-to-setup
+  local num; num=$(state BOOTNUM)
+  [[ -n $num ]] || num=$(entries_named | head -n1)
+  [[ -n $num ]] || fail "'$ENTRY' 부팅 항목이 없습니다. 먼저 준비하세요."
+  efibootmgr --bootnext "$num" >/dev/null || fail "다음 부팅을 '$ENTRY' 로 정하지 못했습니다."
+  info "다음 부팅 한 번만 '$ENTRY' (Boot$num) 로 시작합니다."
+  (( YES )) && systemctl reboot
+  return 0
+}
+
+status() {
+  if [[ -f $STATE ]]; then
+    echo "준비됨: $(state PART) ($LABEL), 부팅 항목 Boot$(state BOOTNUM) '$ENTRY'"
+    return 0
+  fi
+  echo "준비되지 않음."
+  return 1
+}
+
+# --- installer's restore dry-run (Windows still installed) ---
+boot_test_create() {
+  need_root --boot-test-create
+  local p d mp found= n
+  for n in $(test_entries); do delete_entry "$n"; done
+  for p in $(parts_where FSTYPE vfat); do
+    mp=$(mktemp -d)
+    if mount -o ro "$p" "$mp" 2>/dev/null; then
+      [[ -f $mp/EFI/Microsoft/Boot/bootmgfw.efi ]] && found=$p
+      umount "$mp"
+    fi
+    rmdir "$mp"; [[ -n $found ]] && break
+  done
+  [[ -n $found ]] || fail "내부 저장장치에서 Windows 부팅 파일(EFI\\Microsoft\\Boot\\bootmgfw.efi)을 찾을 수 없습니다."
+  d=$(parent_disk "$found")
+  n=$(add_entry_last "$d" "$(partnum "$found")" '\EFI\Microsoft\Boot\bootmgfw.efi')
+  info "테스트용 부팅 항목 '$ENTRY' (Boot$n) 를 만들었습니다. 부팅 순서 맨 끝입니다."
+  return 0
+}
+boot_test_remove() {
+  need_root --boot-test-remove
+  local n; for n in $(test_entries); do delete_entry "$n" && info "테스트용 부팅 항목 Boot$n 삭제"; done
+  return 0
+}
+boot_test_status() { [[ -n $(test_entries) ]]; }
+
+# =========================================================================
+# Window for people (kdialog); the work runs as root through pkexec.
+# =========================================================================
+gui() {
+  command -v kdialog >/dev/null || { echo "kdialog가 없습니다. 터미널에서: sudo $0 --prepare <ISO>"; exit 1; }
+  err() { kdialog --title "$T" --error "$1"; exit 1; }
+  run_root() {  # run_root <args...>: pkexec with a progress window, Korean errors
+    local log busy rc msg
+    log=$(mktemp)
+    busy=$(kdialog --title "$T" --progressbar "작업 중입니다... 컴퓨터를 끄지 마세요." 0)
+    pkexec /usr/bin/sufun-windows-restore "$@" --gui > "$log" 2>&1; rc=$?
+    qdbus6 $busy close >/dev/null 2>&1 || true
+    if (( rc == 126 || rc == 127 )); then rm -f "$log"; err "관리자 암호 확인이 취소되었습니다. 아무것도 바뀌지 않았습니다."; fi
+    if (( rc != 0 )) || ! grep -q '^SUFUN-OK:' "$log"; then
+      msg=$(sed -n 's/^SUFUN-ERROR: //p' "$log" | head -n1)
+      kdialog --title "$T" --detailederror "${msg:-오류가 났습니다.}" "$(tail -n 40 "$log")"
+      rm -f "$log"; exit 1
+    fi
+    rm -f "$log"
+  }
+  if windows_present; then
+    kdialog --title "$T" --msgbox "이 Surface에는 아직 Windows가 있습니다 (SUFUN은 SD카드에 설치됨).
+
+Windows를 쓰려면: microSD 카드를 빼고 켜면 Windows가 시작됩니다.
+SUFUN 부팅 항목까지 없애려면: Windows에서 sufun-sd-setup.ps1 -Uninstall 을 실행하세요.
+(docs/sd-boot-ko.md)"
+    exit 0
+  fi
+  if [[ -f $STATE ]]; then
+    local c
+    c=$(kdialog --title "$T" --menu "Windows 설치 준비가 되어 있습니다 ($(state PART)).
+무엇을 할까요?" start "지금 Windows 설치 시작 (다시 시작)" remove "준비한 것 지우기 (SUFUN 공간 되돌리기)") || exit 0
+    case $c in
+      start)
+        kdialog --title "$T" --warningyesno "$(setup_help)
+
+지금 다시 시작해서 Windows 설치 프로그램을 열까요?" --yes-label "다시 시작" --no-label "취소" || exit 0
+        pkexec /usr/bin/sufun-windows-restore --reboot-to-setup --yes ;;
+      remove)
+        kdialog --title "$T" --yesno "'$LABEL' 파티션과 'Windows Setup' 부팅 항목을 지우고, 그 공간을 SUFUN에 돌려줄까요?" || exit 0
+        run_root --remove --yes
+        kdialog --title "$T" --msgbox "되돌렸습니다. SUFUN은 그대로입니다." ;;
+    esac
+    exit 0
+  fi
+  kdialog --title "$T" --yesno "USB 없이 Windows로 되돌아가는 도구입니다.
+
+1. microsoft.com 에서 Windows 11 ISO를 직접 내려받으세요
+   (Windows 11 디스크 이미지(ISO) 다운로드, 한국어, 64비트).
+2. 이 도구가 내부 저장장치에 'WININSTALL' 파티션을 만들고(SUFUN 공간을 조금 줄임)
+   ISO 내용을 복사한 뒤, 부팅 메뉴에 'Windows Setup' 항목을 추가합니다.
+3. 아직 아무것도 지우지 않습니다. SUFUN은 그대로 켜집니다.
+
+ISO 파일을 고를까요?" || exit 0
+  local iso
+  iso=$(kdialog --title "Windows 11 ISO 고르기" --getopenfilename "$HOME/다운로드" "*.iso *.ISO|ISO 파일") || exit 0
+  [[ -f $iso ]] || err "파일을 찾을 수 없습니다."
+  run_root --prepare "$iso" --yes
+  kdialog --title "$T" --warningyesno "준비가 끝났습니다.
+
+$(setup_help)
+
+지금 다시 시작해서 Windows 설치 프로그램을 열까요?
+(나중에 하려면 이 도구를 다시 열거나, Surface UEFI의 Boot configuration에서 'Windows Setup' 을 고르세요.)" \
+    --yes-label "다시 시작" --no-label "나중에" || exit 0
+  pkexec /usr/bin/sufun-windows-restore --reboot-to-setup --yes
+}
+setup_help() {
+  cat <<'EOF'
+Windows 설치 프로그램에서 ("Windows를 설치할 위치" 화면):
+  지울 것:   SUFUN의 EFI 파티션 (약 1 GB, 시스템)과 SUFUN 파티션 (가장 큰 것)
+  지우면 안 됨: 'WININSTALL' 파티션 (설치 파일이 여기 있음, 마지막 파티션)
+  그다음 '할당되지 않은 공간'을 골라 [다음]을 누르세요.
+설치가 끝나면 Windows의 디스크 관리에서 WININSTALL을 지우고 C: 를 늘리면 됩니다.
+SUFUN의 모든 파일이 지워집니다. 필요한 파일은 먼저 백업하세요.
+EOF
+}
+
+case "${1:-}" in
+  --prepare)          prepare "${2:-}" ;;
+  --remove)           remove ;;
+  --reboot-to-setup)  reboot_to_setup ;;
+  --status)           status ;;
+  --boot-test-create) boot_test_create ;;
+  --boot-test-remove) boot_test_remove ;;
+  --boot-test-status) boot_test_status ;;
+  -h|--help)          sed -n '2,32p' "$0" ;;
+  ""|--gui)           gui ;;
+  *)                  echo "알 수 없는 옵션: $1 (--help)" >&2; exit 2 ;;
+esac
