@@ -48,7 +48,7 @@ LIVEOPTS="archisobasedir=arch archisolabel=$LABEL console=ttyS0,115200 console=t
 qemu-img create -f qcow2 disk.qcow2 64G >/dev/null
 # Empty 1 GiB microSD card (QEMU SD cards must be a power of 2 in size)
 truncate -s 1G sdblank.img
-SDCARD=(-device sdhci-pci -device sd-card,drive=sd0 -drive id=sd0,if=none,format=raw,file=sdblank.img)
+SDCARD=(-device sdhci-pci,sd-spec-version=3 -drive id=sdimg,if=none,format=raw,file=sdblank.img -device sd-card,drive=sdimg)
 # Dummy Windows 11 ISO for the restore test (no Microsoft files)
 bash "$HERE/make-dummy-windows-iso.sh" "$ISO" "$LABEL" winiso.iso || { echo "could not make the dummy Windows ISO" >&2; exit 1; }
 

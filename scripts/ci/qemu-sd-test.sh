@@ -69,7 +69,7 @@ fingerprint() {
 }
 fingerprint > before.txt
 
-SD=(-device sdhci-pci -device sd-card,drive=sd0 -drive id=sd0,if=none,format=raw,file=card.img)
+SD=(-device sdhci-pci,sd-spec-version=3 -drive id=sdimg,if=none,format=raw,file=card.img -device sd-card,drive=sdimg)
 DISK=(-drive file=internal.img,if=virtio,format=raw)
 
 fail=0
