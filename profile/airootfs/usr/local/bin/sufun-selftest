@@ -558,6 +558,7 @@ host_portscan() {
   local ifc= i res=
   for i in /sys/class/net/*; do [[ $(cat "$i/address" 2>/dev/null) == "$SEC_MAC" ]] && ifc=${i##*/}; done
   say "INFO listening sockets (ss -tuln): $(ss -Htuln 2>/dev/null | awk '{print $1 "/" $5}' | sort -u | tr '\n' ' ')"
+  say "INFO programs listening beyond loopback: $(ss -Htulnp 2>/dev/null | awk '$5 !~ /^(127\.|\[::1\])/ {n = $NF; sub(/^users:\(\("/, "", n); sub(/".*/, "", n); print $1 "/" $5 "=" n}' | sort -u | tr '\n' ' ')"
   # Nothing may listen for TCP connections from the network (loopback only is fine)
   check no-tcp-listener-on-network bash -c '! ss -Htln | awk "{print \$4}" | grep -vE "^(127\.|\[::1\]|\[::ffff:127\.)"'
   [[ -n $ifc ]] || { say "INFO portscan: no scan network card in this test"; return 0; }
