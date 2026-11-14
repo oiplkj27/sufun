@@ -9,13 +9,14 @@ build, (3) fixes, (4) this report.
 
 ## 한국어 요약 (쉬운 설명)
 
-**결론: 심각(Critical)·높음(High) 등급의 문제는 찾지 못했습니다.** 중간(Medium) 4개 중 3개는 고쳤고, 1개(PH-1, 기기를 훔친 사람)는 설계상 한계라서 고치지 않고 설명만 적었습니다. 낮음(Low) 14개 중 13개는 고쳤고, 1개(G-6)는 선택 사항으로 남겼습니다.
+**결론: 심각(Critical)·높음(High) 등급의 문제는 찾지 못했습니다.** 중간(Medium) 4개 중 3개는 고쳤고, 1개(PH-1, 기기를 훔친 사람)는 설계상 한계라서 고치지 않고 설명만 적었습니다. 낮음(Low) 15개 중 14개는 고쳤고, 1개(G-6)는 선택 사항으로 남겼습니다.
 
 | 무엇 | 쉬운 설명 | 상태 |
 |---|---|---|
 | 업데이트 파일(.sufun) | 가짜·변조·옛날·서명 없는 업데이트는 모두 거부됩니다. 검사한 파일과 설치하는 파일이 항상 같은 파일이 되도록 더 단단하게 고쳤습니다. | 고침 + 자동 테스트 |
 | 키보드 엿보기 | 설치된 사용자가 `input` 그룹에 들어 있어서, 사용자의 아무 프로그램이나 모든 키 입력(잠금 화면 암호 포함)을 읽을 수 있었습니다. | 고침 |
-| 라이브 시스템 방화벽 | 라이브 시스템은 암호가 없는데 방화벽도 꺼져 있었습니다. (열린 포트는 없었습니다.) | 고침 (방화벽 켬) |
+| 라이브 시스템 방화벽 | 라이브 시스템은 암호가 없는데 방화벽이 꺼져 있었고, 같은 네트워크의 다른 컴퓨터가 보내는 "이름 찾기" 질문(포트 5355, 5353)에 대답하고 있었습니다. | 고침 (방화벽 켬, 대답 기능 끔) |
+| 업데이트 설치 버그 | 공격 테스트를 만들다가 발견: 이름에 `:` 가 들어간 패키지 때문에 **진짜 업데이트 파일도 거부**되고 있었습니다. 보안 구멍은 아니지만 첫 업데이트가 실패했을 것입니다. | 고침 + 자동 테스트 |
 | 릴리스 승인 | README에는 "서명 전에 승인"이라고 되어 있었지만 GitHub에 그 설정(`release` 환경)이 실제로는 없었습니다. | 고침 (만들었음) |
 | 기기를 훔친 사람 | 디스크 암호화가 없어서, Surface나 SD카드를 손에 넣은 사람은 파일을 읽을 수 있습니다. UEFI 암호로는 막을 수 없습니다. | **고치지 않음** (아래 PH-1, 결정 필요) |
 | CI 테스트 모드 | 실제 Surface에서는 절대 켜지지 않습니다 (QEMU 가상 머신인지 확인). | 확인 + 한 군데 보강 |
@@ -52,6 +53,7 @@ build, (3) fixes, (4) this report.
 | B-1 | Low | linux-surface key pinned by short id | fixed |
 | B-2 | Low | build user keeps password-less `pacman` | fixed |
 | P-1 | Low | Windows script: `diskpart` command file in `%TEMP%` | fixed |
+| U-4 | Low | `sufun-update` refused genuine updates (package name with `:`) | fixed |
 | U-3 | Info | an older (but newer than installed) signed update is accepted | by design |
 
 ### I-1 (Medium) The installed user could read every key press
@@ -64,11 +66,11 @@ build, (3) fixes, (4) this report.
 
 ### N-1 (Medium) Live system: no password and no firewall
 
-- **What:** the live user has no password and password-less `sudo` (needed for a live system), and `ufw` was not running there.
+- **What:** the live user has no password and password-less `sudo` (needed for a live system), and `ufw` was not running there. `systemd-resolved` answered LLMNR (tcp/udp 5355) and mDNS (udp 5353) questions from the network.
 - **Attack:** on public Wi-Fi, any program that opens a network port in the live session (Steam Remote Play, a development server, a file-sharing program) would be reachable by everyone on that network.
-- **Checked:** see "Port scan" below for what was listening before the fix.
-- **Fix:** the live system starts `ufw` with the same rules as an installed system (block incoming, allow outgoing).
-- **Tests:** `live-firewall-on`, `firewall-default-deny`, port scan of the live VM from the CI host.
+- **Checked:** see "Results from the CI virtual machines" below for what was listening before the fix.
+- **Fix:** the live system starts `ufw` with the same rules as an installed system (block incoming, allow outgoing), and the LLMNR/mDNS responder is switched off (`resolved.conf.d/zz-sufun-live.conf`). Installed systems do not run `systemd-resolved`.
+- **Tests:** `live-firewall-on`, `firewall-default-deny`, `name-responder-off`, `no-tcp-listener-on-network`, port scan of the live VM from the CI host.
 
 ### G-1 (Medium) The release approval step did not exist
 
@@ -115,6 +117,13 @@ Tests for the parts that do hold: `boot-menu-editor-off`, `root-account-locked`,
 - **Fix:** `tar --force-local` everywhere; names starting with `-` are refused; only one file name is accepted.
 - **Tests:** `update-option-name-refused`, lint rule "update tool: private copy, no remote tar names".
 
+### U-4 (Low) Genuine updates were refused
+
+- **What:** the file-name check in `sufun-update` did not allow `:`. One of our own packages has it in its file name (`cachyos-ananicy-rules-1:1.1.49-1-any.pkg.tar.zst`, the `1:` is a pacman "epoch").
+- **Effect:** not a way in, the opposite: every real `.sufun` file would have been refused as "damaged". Found because the attack tests use a file made by the real release tools.
+- **Fix:** `:` is allowed in package file names. It is safe because `tar` runs with `--force-local` (U-2).
+- **Tests:** `update-real-file-verifies`, `update-user-can-check`, `update-newer-signed-passes`.
+
 ### U-3 (Info) Old signed updates
 
 `sufun-update` refuses the installed version and anything older (`update-old-version-refused`). It cannot know that a newer release exists: on a 1.0 system, a genuine signed 1.1 file is accepted even after 1.2 came out. That is normal for update files that work offline. If a release ever has a serious hole, publish the next one with `release-notes/<version>.min-from`, and revoke the subkey if it leaked (`sufun-key.sh rotate`).
@@ -152,7 +161,7 @@ The installer wrote `/tmp/sufun-pacman.conf` (now `mktemp`), and `input-switch` 
 - **G-4:** the key passphrase was a `gpg --passphrase "..."` argument, visible in the process list of the runner. It now goes through a pipe (`--passphrase-fd`). The update test media is made with this code path on every build.
 - **G-5:** the release job now stops if the secret contains the primary key instead of only the signing subkey.
 - **G-6 (optional, not changed):** the repository has no rules against force-pushing `main` or moving a `v*` tag, and I can't see whether two-factor login is on. Recommended: turn on 2FA; *Settings → Rules → New ruleset*: block deletion and force-push for `main` and for tags `v*`.
-- **Checked, fine:** no `pull_request` / `pull_request_target` trigger at all, so pull requests and forks run nothing and can't reach secrets; default token is read-only; only the release job may write; no untrusted text (`github.event...`) in any command; secret scanning and push protection are on; `.gitignore` blocks key files; no private key in the repository or its history paths; the private key is never printed (only key ids).
+- **Checked, fine:** no `pull_request` / `pull_request_target` trigger at all, so pull requests and forks run nothing and can't reach secrets; default token is read-only; only the release job may write; no untrusted text (`github.event...`) in any command; secret scanning and push protection are on; `.gitignore` blocks key files; no private key in the repository or in any earlier commit; the private key is never printed (only key ids).
 
 ### B-1, B-2 Build
 
@@ -175,7 +184,51 @@ The installer wrote `/tmp/sufun-pacman.conf` (now `mktemp`), and `input-switch` 
 
 ## Results from the CI virtual machines
 
-RESULTS_PLACEHOLDER
+Run: GitHub Actions `build-test`, run 43639081215, commit eafa4c0 (all 5 jobs green, 460 checks passed in the VMs, 0 failed).
+
+**Port scan from the CI host** (nmap, private test network, firewall on):
+
+| System | TCP 1-65535 | UDP (53, 67-69, 123, 137, 138, 161, 500, 631, 1716, 1900, 3702, 5353, 5355, 27031-27036) |
+|---|---|---|
+| live | none open | none answering |
+| installed | none open | none answering |
+
+**Listening sockets inside the VMs** (`ss -tuln`):
+
+- Live, before the fix: `systemd-resolved` on tcp+udp 5355 (LLMNR) and udp 5353 (mDNS), all addresses.
+- Live, after the fix: only the local resolver on loopback (127.0.0.53, 127.0.0.54 port 53).
+- Installed: nothing at all.
+
+The first try at switching the responder off (`10-sufun-live.conf`) closed 5355 but not 5353: the archiso base image brings `resolved.conf.d/archiso.conf` with `MulticastDNS=yes`, which sorts later and won. The file is now `zz-sufun-live.conf`; the test `name-responder-off` keeps it that way.
+
+**Becoming root as the normal user (installed system):** all refused.
+
+- `sudo -n` and `pkexec` without a password: refused. Root account locked, no empty passwords, no live user left, no SDDM auto-login, no `NOPASSWD` rule.
+- polkit: only "restart the touchpad re-probe unit" is allowed without a password. Another unit, another verb, `sufun-update` and `sufun-windows-restore` all ask for the administrator password.
+- No file in a root-run path is writable by the user. Setuid/setgid programs are the usual Arch ones, all owned by root, none from SUFUN: `Xorg.wrap chage chfn chsh crontab dbus-daemon-launch-helper fusermount fusermount3 gpasswd ksu mount mount.cifs newgrp passwd pkexec su sudo umount unix_chkpwd utempter wall write`.
+- Boot menu editor off, boot partition readable by root only, user not in `input`.
+
+**Update attacks (installed system, 21 tests):** every bad file refused, nothing installed, nothing left behind.
+
+| Attack | Result |
+|---|---|
+| file signed with an unknown key / attacker's key added inside the file | refused (signature) |
+| unsigned file (signature removed) | refused |
+| package changed after signing; version changed after signing | refused (checksum) |
+| package without its own signature | refused |
+| same or older version (downgrade / replay) | refused |
+| `min_from` higher than the installed version | refused |
+| extra file, symbolic link, `../../` path inside the archive | refused, nothing written outside the work folder |
+| file name starting with `-` | refused |
+| normal user installs without password (direct and via `pkexec`) | refused |
+| genuine file, genuine newer file | accepted for checking; asks before installing |
+
+**Other:**
+
+- `sufun-memguard` ignored a fake process named "Web Content" started by the user from outside Firefox's folder.
+- The automatic installer refused to start under `sufun.test=live`.
+- Kernel settings seen: `ptrace_scope=1 kptr_restrict=0 dmesg_restrict=1 unprivileged_bpf_disabled=2 protected_symlinks=1`. `kptr_restrict=0` is harmless together with `dmesg_restrict=1` and the default `%pK` hashing; not changed.
+- The live system has more setuid programs than the installed one (`ssh-keysign`, `mount.nfs`, `ndisc6`, `vmware-user-suid-wrapper`, ...): they come from the archiso base package list. The live user already has password-less `sudo`, so they add nothing.
 
 ## Regression tests added
 
