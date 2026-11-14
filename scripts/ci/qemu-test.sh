@@ -63,15 +63,17 @@ fail=0
 #     must work (no silent skip); on a developer machine without sudo/nmap they
 #     are left out. ---
 SCANNIC=() SECUSB=()
+# Fixed PCI slots (addr=) far from the others: the disk keeps the slot it has in
+# the tests without these extra devices, so the firmware boot entries stay valid.
 if command -v nmap >/dev/null && sudo -n true 2>/dev/null && bash "$HERE/portscan.sh" --setup; then
-  SCANNIC=(-netdev tap,id=n1,ifname=sufuntap,script=no,downscript=no -device virtio-net-pci,netdev=n1,mac=52:54:00:77:00:02)
+  SCANNIC=(-netdev tap,id=n1,ifname=sufuntap,script=no,downscript=no -device virtio-net-pci,netdev=n1,mac=52:54:00:77:00:02,addr=0x10)
   trap 'bash "$HERE/portscan.sh" --teardown' EXIT
 elif [[ ${GITHUB_ACTIONS:-} == true ]]; then
   echo "the port scan network could not be set up"; fail=1
 fi
 if [[ -n $PKGTAR ]] && bash "$HERE/make-security-media.sh" "$PKGTAR" "$OUT/sec.iso"; then
   # as a USB stick: never an "internal disk" for the installer or the restore tool
-  SECUSB=(-device qemu-xhci,id=secxhci -drive if=none,id=secmedia,format=raw,readonly=on,file=sec.iso -device usb-storage,bus=secxhci.0,drive=secmedia)
+  SECUSB=(-device qemu-xhci,id=secxhci,addr=0x11 -drive if=none,id=secmedia,format=raw,readonly=on,file=sec.iso -device usb-storage,bus=secxhci.0,drive=secmedia)
 elif [[ ${GITHUB_ACTIONS:-} == true ]]; then
   echo "the update test media could not be made"; fail=1
 fi
