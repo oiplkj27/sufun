@@ -77,6 +77,9 @@ if ($Phase -eq 'setup') {
     $uuid = Volume-Serial $cl
     Check 's1-entry-uuid' ($entry.Contains("archisodevice=/dev/disk/by-uuid/$uuid")) "($uuid)"
     Check 's1-entry-lf' (-not $entry.Contains("`r"))
+    Check 's1-entry-splash' ($entry -match 'options .* quiet splash')
+    $text = Get-Content -Raw 'S:\loader\entries\sufun-text.conf'
+    Check 's1-text-mode-entry' ($text.Contains('text mode') -and $text.Contains("by-uuid/$uuid") -and -not $text.Contains('splash'))
     Check 's1-loader-conf' ((Get-Content -Raw 'S:\loader\loader.conf').Contains('default sufun-live.conf'))
     Check 's1-windows-untouched' (((Get-Partition -DriveLetter W).Size -eq $wBefore) -and (Test-Path 'W:\windows-test.txt'))
     Check 's1-state' ((Get-Content -Raw $state) -match 'Mode=esp' -and (Get-Content -Raw $state) -match 'Case=a')

@@ -543,10 +543,20 @@ if (Test-Path -LiteralPath $ucode) {
 }
 $initrdLines += 'initrd  /EFI/SUFUN/live/initramfs-linux-surface.img'
 Write-Unix "${B}loader\sufun-owned.txt" @('This loader folder was made by SUFUN (sufun-sd-setup.ps1). -Uninstall removes it.')
+# Normal start: SUFUN boot screen (Plymouth, "quiet splash"; Esc shows the text).
+# "text mode": the same without the boot screen, for troubleshooting.
+# usbcore.quirks=045e:09b5:g = wait a moment before talking to the Type Cover
+# (otherwise its touchpad sometimes starts in a mode that does not work).
+$liveOpts = "archisobasedir=arch archisodevice=/dev/disk/by-uuid/$CardUuid copytoram=n cow_spacesize=512M usbcore.quirks=045e:09b5:g"
 Write-Unix "${B}loader\entries\sufun-live.conf" (@(
     'title   SUFUN Live (microSD)',
     'linux   /EFI/SUFUN/live/vmlinuz-linux-surface') + $initrdLines + @(
-    "options archisobasedir=arch archisodevice=/dev/disk/by-uuid/$CardUuid copytoram=n"))
+    "options $liveOpts quiet splash loglevel=3"))
+# (file name sorts after the other SUFUN entries in the menu)
+Write-Unix "${B}loader\entries\sufun-text.conf" (@(
+    'title   SUFUN Live (microSD, text mode)',
+    'linux   /EFI/SUFUN/live/vmlinuz-linux-surface') + $initrdLines + @(
+    "options $liveOpts"))
 if ($case -eq 'a' -and (Test-Path -LiteralPath "${B}loader\entries\sufun-sd.conf")) {
     # The card was formatted: an older "SD카드에 설치" on it is gone.
     Remove-Item -LiteralPath "${B}loader\entries\sufun-sd.conf", "${B}loader\entries\sufun-sd-fallback.conf" -Force -ErrorAction SilentlyContinue
@@ -610,10 +620,12 @@ if ($case -eq 'b') {
 Write-Host ''
 Write-Host '=== 준비 완료 ===' -ForegroundColor Green
 Say '카드를 꽂은 채로 SUFUN을 켜는 방법 (Windows는 그대로 기본입니다):'
-Say '  방법 1) 설정 → 시스템 → 복구 → 고급 시작 "지금 다시 시작" → 장치 사용 → "SUFUN (SD)"'
-Say '  방법 2) 전원을 끄고 볼륨 위(+) + 전원 → Surface UEFI → Boot configuration →'
-Say '          "SUFUN (SD)" 를 왼쪽으로 밀기(swipe) = 지금 한 번 부팅'
-Say '부팅 메뉴(검은 화면)에서 "SUFUN Live (microSD)" 를 고르면 됩니다.'
+Say '  1) Surface를 끕니다.'
+Say '  2) 볼륨 위(+) 버튼을 누른 채 전원 버튼을 눌러 Surface UEFI를 엽니다.'
+Say '  3) Boot configuration → "SUFUN (SD)" 를 왼쪽으로 밀기(swipe) = 지금 한 번 그걸로 부팅'
+Say '  참고: Windows의 "고급 시작 → 장치 사용" 목록에는 "SUFUN (SD)" 가 나오지 않습니다'
+Say '        (이 Surface는 USB Storage / Internal Storage / PXE Network 만 보여 줌). UEFI 화면에서 고르세요.'
+Say '부팅 메뉴(검은 화면)에서 "SUFUN Live (microSD)" 를 고르면 됩니다 (문제가 있으면 "text mode").'
 Say '모두 되돌리려면: 이 스크립트를 -Uninstall 로 실행하세요.'
 Pause-End
 exit 0

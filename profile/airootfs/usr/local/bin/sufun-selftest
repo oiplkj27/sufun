@@ -159,6 +159,306 @@ logout_screen() {  # logout_screen <user>
   sleep 2
 }
 
+# ===================== checks added for the first real-hardware test =====================
+uid_of() { id -u "$1"; }
+ubus() {  # ubus <user> <command...>: run a command in that user's session (D-Bus, Wayland)
+  local u=$1 uid; uid=$(uid_of "$u"); shift
+  runuser -u "$u" -- env XDG_RUNTIME_DIR="/run/user/$uid" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" "$@"
+}
+expected_lang() {  # the language the first-start chooser was told to pick in this test
+  local l; l=$(sed -n 's/.*sufun\.welcome=\([A-Za-z_.0-9-]*\).*/\1/p' /proc/cmdline)
+  echo "${l:-ko_KR.UTF-8}"
+}
+
+# --- system settings that need no desktop ---
+check_system() {
+  check zswap-off            bash -c '[[ $(cat /sys/module/zswap/parameters/enabled 2>/dev/null || echo N) == N ]]'
+  check sysctl-swappiness    bash -c '[[ $(sysctl -n vm.swappiness) == 180 ]]'
+  check sysctl-page-cluster  bash -c '[[ $(sysctl -n vm.page-cluster) == 0 ]]'
+  check sysctl-watermark     bash -c '[[ $(sysctl -n vm.watermark_boost_factor) == 0 && $(sysctl -n vm.watermark_scale_factor) == 125 ]]'
+  check zram-zstd            bash -c 'grep -q "\[zstd\]" /sys/block/zram0/comp_algorithm'
+  check mglru-min-ttl        bash -c '[[ $(cat /sys/kernel/mm/lru_gen/min_ttl_ms) == 1000 ]]'
+  check earlyoom             systemctl is-active earlyoom
+  check memguard-running     systemctl is-active sufun-memguard
+  check kmemwatch-timer      systemctl is-enabled sufun-kmemwatch.timer
+  check typecover-service    systemctl is-active sufun-typecover
+  check typecover-udev-rule  test -f /usr/lib/udev/rules.d/70-sufun-surface-go3.rules
+  check typecover-polkit     test -f /usr/share/polkit-1/rules.d/50-sufun-typecover.rules
+  check camera-wireplumber   test -f /etc/wireplumber/wireplumber.conf.d/51-sufun-ipu3-cameras.conf
+  check camera-tuning        grep -q relativeLuminanceTarget /etc/libcamera/ipa/ipu3/ov5693.yaml
+  local missing="" l
+  for l in $(awk -F'\t' '!/^#/ && NF {print $1}' /usr/share/sufun/languages.tsv); do
+    locale -a 2>/dev/null | grep -qix "${l%.UTF-8}.utf8" || missing+=" $l"
+  done
+  say "INFO locales missing:${missing:- none}"
+  check locales-generated    test -z "$missing"
+  say "INFO zswap $(cat /sys/module/zswap/parameters/enabled 2>/dev/null), swappiness $(sysctl -n vm.swappiness), zram $(cat /sys/block/zram0/comp_algorithm 2>/dev/null)"
+}
+
+# --- first-start chooser (language, time zone, keyboard) ---
+welcome_shot() {  # screenshot of the chooser while it is shown (CI accepts it after 15 s)
+  local i
+  for ((i = 0; i < 90; i++)); do
+    if pgrep -u sufun-oobe -f 'welcome/Main.qml' >/dev/null 2>&1; then
+      sleep 6; say "SHOT welcome"; return 0
+    fi
+    sleep 1
+  done
+  say "INFO first-start chooser window not seen (already done?)"
+}
+check_welcome() {  # check_welcome <user>
+  local u=$1 want tz kb pid env
+  want=$(expected_lang)
+  tz=$(awk -F'\t' -v l="$want" '$1 == l {print $3}' /usr/share/sufun/languages.tsv)
+  kb=$(awk -F'\t' -v l="$want" '$1 == l {print $4}' /usr/share/sufun/languages.tsv)
+  say "INFO welcome.conf: $(tr '\n' ' ' < /etc/sufun/welcome.conf 2>/dev/null)"
+  check welcome-done         test -f /var/lib/sufun/welcome-done
+  check welcome-language     grep -qx "LANG=$want" /etc/locale.conf
+  check welcome-timezone     bash -c '[[ $(readlink -f /etc/localtime) == */zoneinfo/$1 ]]' _ "$tz"
+  check welcome-keyboard     grep -qx "KB=$kb" /etc/sufun/welcome.conf
+  if [[ $kb == kr ]]; then
+    check fcitx5-hangul      grep -qx 'Name=hangul' /etc/xdg/fcitx5/profile
+  else
+    check fcitx5-layout      grep -qx "Name=keyboard-$(awk -F'\t' -v k="$kb" '$1 == k {print $3}' /usr/share/sufun/keyboards.tsv)" /etc/xdg/fcitx5/profile
+  fi
+  pid=$(pgrep -u "$u" -x plasmashell | head -n1)
+  env=$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep '^LANG=')
+  say "INFO desktop session $env"
+  check desktop-language     test "$env" = "LANG=$want"
+}
+
+# --- small desktop settings ---
+check_desktop_extras() {  # check_desktop_extras <user>
+  local u=$1 home applets sc
+  home=$(getent passwd "$u" | cut -d: -f6)
+  applets="$home/.config/plasma-org.kde.plasma.desktop-appletsrc"
+  check krunner-opens-empty  grep -qx 'RetainPriorSearch=false' /etc/xdg/krunnerrc
+  check touchpad-defaults    bash -c 'grep -qx "TapToClick=true" /etc/xdg/kcminputrc && grep -qx "ClickMethod=2" /etc/xdg/kcminputrc && grep -qx "NaturalScroll=true" /etc/xdg/kcminputrc'
+  check tray-rotation-lock   grep -qx 'plugin=org.sufun.rotationlock' "$applets"
+  check rotation-lock-toggle bash -c 'a=$(runuser -u "$1" -- /usr/lib/sufun/rotation-lock toggle); b=$(runuser -u "$1" -- /usr/lib/sufun/rotation-lock toggle); [[ $a != "$b" ]]' _ "$u"
+  check input-switch-running bash -c 'pgrep -u "$1" -f /usr/lib/sufun/input-switch' _ "$u"
+  check memwatch-timer       ubus "$u" systemctl --user is-active sufun-memwatch.timer
+  check idle-marker-running  ubus "$u" systemctl --user is-active sufun-idle.service
+  check no-gmenudbusmenuproxy bash -c '! pgrep -u "$1" -x gmenudbusmenuproxy' _ "$u"
+  # Ctrl+Shift+Esc / Ctrl+Esc / Win+Esc = System Monitor (KDE key codes:
+  # Ctrl 0x04000000, Shift 0x02000000, Meta 0x10000000, Esc 0x01000000)
+  sc=$(ubus "$u" busctl --user call org.kde.kglobalaccel /kglobalaccel org.kde.KGlobalAccel \
+         shortcut as 4 org.kde.plasma-systemmonitor.desktop _launch "System Monitor" "System Monitor" 2>/dev/null)
+  say "INFO System Monitor shortcuts (key codes): ${sc:-?}"
+  check shortcut-ctrl-shift-esc bash -c '[[ " $1 " == *" 117440512 "* ]]' _ "$sc"
+  check shortcut-ctrl-esc       bash -c '[[ " $1 " == *" 83886080 "* ]]' _ "$sc"
+  sc=$(ubus "$u" busctl --user call org.kde.kglobalaccel /kglobalaccel org.kde.KGlobalAccel \
+         shortcut as 4 org.kde.dolphin.desktop _launch Dolphin Dolphin 2>/dev/null)
+  check shortcut-win-e          bash -c '[[ " $1 " == *" 268435525 "* ]]' _ "$sc"
+}
+
+# --- System Monitor sensors (ksystemstats) ---
+check_sensors() {  # check_sensors <user>
+  local u=$1 all s
+  all=$(ubus "$u" timeout 60 busctl --user call org.kde.ksystemstats1 / org.kde.ksystemstats1 allSensors 2>/dev/null)
+  for s in cpu/all/usage memory/physical/used memory/physical/total memory/swap/used; do
+    check "sensor-${s//\//-}" grep -qF "\"$s\"" <<< "$all"
+  done
+  check sensor-network        grep -qE '"network/[^"/]+/download"' <<< "$all"
+  say "INFO sensors: $(grep -oE '"(gpu|disk)/[^"]*/(usage|used)"' <<< "$all" | sort -u | head -n 8 | tr '\n' ' ')"
+  say "INFO sensors total: $(grep -oE '"[a-z]+/[^"]+"' <<< "$all" | wc -l)"
+  local h; for h in /usr/lib/ksystemstats_intel_helper /usr/lib/ksystemstats_xe_helper; do
+    [[ -e $h ]] && say "INFO $(getcap "$h" 2>/dev/null || echo "$h: getcap unavailable")"
+  done
+}
+
+# --- Firefox: uBlock Origin installed + enabled, can be switched off ---
+ff_profile() { find "$1/.mozilla/firefox" "$1/.config/mozilla/firefox" -maxdepth 2 -name extensions.json 2>/dev/null | head -n1 | xargs -r dirname; }
+ff_ublock_state() {  # prints "active=<true|false> userDisabled=<true|false>"
+  local j="$1/extensions.json"
+  [[ -f $j ]] || { echo "none"; return; }
+  # extensions.json is one long line: take the uBlock object only
+  sed 's/{"id":"/\n{"id":"/g' "$j" | grep '^{"id":"uBlock0@raymondhill.net"' \
+    | grep -oE '"(active|userDisabled)":(true|false)' | head -n 2 | tr -d '"' | tr ':' '=' | tr '\n' ' '
+}
+check_firefox() {  # check_firefox <user>
+  local u=$1 home prof st i
+  home=$(getent passwd "$u" | cut -d: -f6)
+  check ublock-xpi-bundled   test -s /usr/share/sufun/firefox/uBlock0@raymondhill.net.xpi
+  check ublock-policy-normal grep -q '"installation_mode": "normal_installed"' /etc/firefox/policies/policies.json
+  check ublock-not-forced    bash -c '! grep -q force_installed /etc/firefox/policies/policies.json'
+  check ublock-korean-list   grep -q '"KOR-1"' /etc/firefox/policies/policies.json
+  check firefox-fission-kept bash -c '! grep -q "fission" /etc/firefox/policies/policies.json'
+  # First start of Firefox with a fresh profile (offline is fine: the bundled .xpi)
+  as_user "$u" firefox --new-window about:blank >/dev/null 2>&1
+  for ((i = 0; i < 90; i += 3)); do
+    prof=$(ff_profile "$home"); st=$(ff_ublock_state "${prof:-/x}")
+    [[ $st == *active=true* ]] && break
+    sleep 3
+  done
+  say "INFO firefox profile ${prof:-?}: uBlock $st"
+  check ublock-installed-enabled bash -c '[[ $1 == *active=true* && $1 == *userDisabled=false* ]]' _ "$st"
+}
+check_firefox_disable() {  # the user can switch uBlock off (what about:addons does), and it stays off
+  local u=$1 home prof st i
+  home=$(getent passwd "$u" | cut -d: -f6); prof=$(ff_profile "$home")
+  [[ -n $prof ]] || { say "FAIL ublock-can-be-disabled (no profile)"; return; }
+  pkill -u "$u" -x firefox; for ((i = 0; i < 30; i++)); do pgrep -u "$u" -x firefox >/dev/null || break; sleep 1; done
+  sed 's/{"id":"/\n{"id":"/g' "$prof/extensions.json" \
+    | sed '/^{"id":"uBlock0@raymondhill.net"/{s/"userDisabled":false/"userDisabled":true/;s/"active":true/"active":false/}' \
+    | tr -d '\n' > "$prof/extensions.json.new" && mv "$prof/extensions.json.new" "$prof/extensions.json"
+  chown "$u:" "$prof/extensions.json"
+  rm -f "$prof/addonStartup.json.lz4"
+  as_user "$u" firefox --headless about:blank >/dev/null 2>&1
+  sleep 40
+  pkill -u "$u" -x firefox; sleep 5
+  st=$(ff_ublock_state "$prof")
+  say "INFO after switching uBlock off and restarting Firefox: $st"
+  check ublock-can-be-disabled bash -c '[[ $1 == *userDisabled=true* ]]' _ "$st"
+}
+
+ping_ms() {  # ping_ms <user> <service> <path>: how long a D-Bus "ping" to it takes (ms)
+  local a b
+  a=${EPOCHREALTIME/[.,]/}
+  ubus "$1" timeout 30 busctl --user call "$2" "$3" org.freedesktop.DBus.Peer Ping >/dev/null 2>&1
+  b=${EPOCHREALTIME/[.,]/}
+  echo $(( (b - a) / 1000 ))
+}
+# --- memory stall: a Firefox tab eats memory; the desktop must stay responsive
+# and the biggest Firefox process must be the one that is closed ---
+memory_pressure_test() {  # memory_pressure_test <user>
+  local u=$1 hog=/tmp/sufun-hog.html big kw ps fx t0 lat max=0 i gone=0 who
+  cat > "$hog" <<'HTML'
+<!doctype html><title>SUFUN memory test</title><body><h1 id=s>0 MB</h1><script>
+// Keeps allocating memory that can't be compressed (random bytes), 64 MB at a time.
+var keep = [], n = 0;
+function more() {
+  var a = new Uint8Array(64 * 1024 * 1024);
+  for (var o = 0; o < a.length; o += 65536) crypto.getRandomValues(a.subarray(o, o + 65536));
+  keep.push(a); n += 64; document.getElementById('s').textContent = n + ' MB';
+  setTimeout(more, 150);
+}
+setTimeout(more, 3000);
+</script>
+HTML
+  chmod 644 "$hog"
+  kw=$(pgrep -x kwin_wayland | head -n1); ps=$(pgrep -u "$u" -x plasmashell | head -n1)
+  fx=$(pgrep -u "$u" -x firefox | head -n1)
+  if [[ -z $fx ]]; then as_user "$u" firefox --new-window about:blank >/dev/null 2>&1; sleep 20; fx=$(pgrep -u "$u" -x firefox | head -n1); fi
+  as_user "$u" firefox --new-tab "file://$hog" >/dev/null 2>&1
+  sleep 25
+  # the biggest Firefox tab process now = the test page
+  big=$(for p in $(pgrep -u "$u" -f -- '-contentproc'); do echo "$(awk '/^VmRSS:/ {print $2}' /proc/$p/status 2>/dev/null || echo 0) $p"; done | sort -nr | head -n1 | awk '{print $2}')
+  say "INFO memory test: biggest Firefox process $big ($(tr -d '\0' < /proc/$big/comm 2>/dev/null)), kwin $kw, plasmashell $ps, firefox $fx"
+  say "SHOT memory-test"
+  t0=$SECONDS
+  while (( SECONDS - t0 < 300 )); do
+    lat=$(ping_ms "$u" org.kde.KWin /KWin); (( lat > max )) && max=$lat
+    lat=$(ping_ms "$u" org.kde.plasmashell /PlasmaShell); (( lat > max )) && max=$lat
+    if ! kill -0 "$big" 2>/dev/null; then gone=1; break; fi
+    sleep 1
+  done
+  say "INFO memory test: page closed after $((SECONDS - t0)) s, slowest desktop answer $max ms, PSI: $(head -n1 /proc/pressure/memory)"
+  who=$( { journalctl -b -u sufun-memguard -o cat; journalctl -b -u earlyoom -o cat; journalctl -b -k -o cat | grep -i 'killed process'; } 2>/dev/null | grep -E "pid $big|\($big\)|process $big " | tail -n 2 | tr '\n' ' ')
+  say "INFO memory test: closed by: ${who:-?}"
+  check memtest-biggest-firefox-closed test "$gone" = 1
+  check memtest-closed-by-guard bash -c '[[ -n $1 ]]' _ "$who"
+  check memtest-desktop-responsive bash -c '(( $1 < 5000 ))' _ "$max"
+  check memtest-kwin-untouched  bash -c '[[ $(pgrep -x kwin_wayland | head -n1) == "$1" ]]' _ "$kw"
+  check memtest-plasma-untouched bash -c '[[ $(pgrep -u "$2" -x plasmashell | head -n1) == "$1" ]]' _ "$ps" "$u"
+  check memtest-firefox-survives bash -c 'kill -0 "$1"' _ "$fx"
+  pkill -u "$u" -x firefox; sleep 3; rm -f "$hog"
+}
+
+# --- sufun-memwatch (leak cleanup) in test mode: fake sizes, fake clock ---
+memwatch_test() {  # memwatch_test <user>
+  local u=$1 home d mw hogpid newpid kwpid n restarts notices bad peak
+  home=$(getent passwd "$u" | cut -d: -f6)
+  d=/tmp/sufun-memwatch-test; rm -rf "$d"; mkdir -p "$d/fake" "$d/run" "$d/state" "$d/k"; chown -R "$u:" "$d"
+  # a stand-in for a leaking desktop helper: a user service running "sufunmemtest"
+  cp /usr/bin/sleep "$d/sufunmemtest"; chmod 755 "$d/sufunmemtest"
+  mkdir -p "$home/.config/systemd/user"
+  printf '[Service]\nExecStart=%s infinity\n' "$d/sufunmemtest" > "$home/.config/systemd/user/sufun-memtest-hog.service"
+  chown -R "$u:" "$home/.config/systemd"
+  ubus "$u" systemctl --user daemon-reload
+  ubus "$u" systemctl --user start sufun-memtest-hog.service; sleep 2
+  hogpid=$(pgrep -u "$u" -x sufunmemtest); kwpid=$(pgrep -x kwin_wayland | head -n1)
+  mw() {  # mw <fake now> <fake size kB>
+    echo "$2" > "$d/fake/sufunmemtest"; chown "$u:" "$d/fake/sufunmemtest"
+    ubus "$u" env SUFUN_MEMWATCH_TEST=1 SUFUN_MEMWATCH_NOW="$1" SUFUN_MEMWATCH_AGE=700 \
+      SUFUN_MEMWATCH_FAKE="$d/fake" SUFUN_MEMWATCH_RUN="$d/run" SUFUN_MEMWATCH_PERSIST="$d/state" \
+      SUFUN_MEMWATCH_IDLE="$d/idle" SUFUN_MEMWATCH_KFLAG="$d/k/kernel-leak" \
+      SUFUN_MEMWATCH_EXTRA=$'sufunmemtest|unit:sufun-memtest-hog.service|100\nkwin_wayland|unit:plasma-kwin_wayland.service|1\nfirefox|unit:none.service|1' \
+      /usr/lib/sufun/memwatch >> "$d/log" 2>&1
+  }
+  local T=1000000
+  mw $T 50000                       # baseline 48 MB
+  mw $((T + 180)) 300000            # grows to 290 MB, but the user is not away
+  check memwatch-waits-for-idle bash -c '[[ $(pgrep -u "$1" -x sufunmemtest) == "$2" ]] && grep -q "waiting: not idle" "$3"' _ "$u" "$hogpid" "$d/log"
+  touch "$d/idle"
+  mw $((T + 360)) 300000            # away now: restarted
+  sleep 2; newpid=$(pgrep -u "$u" -x sufunmemtest)
+  check memwatch-restarts-when-idle bash -c '[[ -n $1 && $1 != "$2" ]]' _ "$newpid" "$hogpid"
+  check memwatch-never-kwin     bash -c '[[ $(pgrep -x kwin_wayland | head -n1) == "$1" ]] && grep -q "refusing to watch kwin_wayland" "$2"' _ "$kwpid" "$d/log"
+  check memwatch-never-firefox  grep -q "refusing to watch firefox" "$d/log"
+  # Oscillating around the limit for 10 hours (a run every 3 minutes)
+  for ((n = 1; n <= 200; n++)); do
+    if (( n % 2 )); then mw $((T + 360 + n * 180)) 40000; else mw $((T + 360 + n * 180)) 300000; fi
+  done
+  restarts=$(cat "$d/run/sufunmemtest.restarts" 2>/dev/null || echo 0)
+  notices=$(grep -c ' restart$' "$d/run/notices.log" 2>/dev/null || echo 0)
+  bad=$(awk '$2 == "restart" { if (p && $1 - p < 3600) b++; p = $1 } END { print b + 0 }' "$d/run/notices.log" 2>/dev/null)
+  say "INFO memwatch: $restarts restarts, $notices restart notices in 10 h, $bad closer than 1 h"
+  check memwatch-max-3-restarts  bash -c '(( $1 <= 3 ))' _ "$restarts"
+  check memwatch-notice-hourly   bash -c '(( $1 == 0 && $2 >= 1 ))' _ "$bad" "$notices"
+  check memwatch-stops-looping   grep -q "already restarted 3 times this boot" "$d/log"
+  # Kernel memory: the root check (fake meminfo) flags a leak; the desktop notice
+  # comes once per boot and, after it was closed, not again for 3 days
+  printf 'SUnreclaim: 100000 kB\nPercpu: 1000 kB\n' > "$d/k/meminfo"
+  SUFUN_KMEMWATCH_MEMINFO="$d/k/meminfo" SUFUN_KMEMWATCH_DIR="$d/k" SUFUN_KMEMWATCH_UPTIME=700 /usr/lib/sufun/kmemwatch
+  printf 'SUnreclaim: 900000 kB\nPercpu: 1000 kB\n' > "$d/k/meminfo"
+  for n in 1 2; do SUFUN_KMEMWATCH_MEMINFO="$d/k/meminfo" SUFUN_KMEMWATCH_DIR="$d/k" SUFUN_KMEMWATCH_UPTIME=1400 /usr/lib/sufun/kmemwatch; done
+  chmod 755 "$d/k"
+  check kmemwatch-flags-leak test -s "$d/k/kernel-leak"
+  T=2000000
+  for ((n = 0; n < 20; n++)); do mw $((T + n * 180)) 40000; done                  # same boot: once
+  rm -f "$d/run/kernel-notice-shown"; mw $((T + 86400)) 40000                     # "next boot", 1 day later: quiet
+  rm -f "$d/run/kernel-notice-shown"; mw $((T + 4 * 86400)) 40000                 # 4 days later: again
+  n=$(grep -c ' kernel$' "$d/run/notices.log" 2>/dev/null || echo 0)
+  say "INFO kernel-leak notices: $n (expected 2: first boot, and again after 3 days)"
+  check kmem-notice-not-annoying test "$n" = 2
+  # The cleanup itself must stay tiny
+  peak=$(ubus "$u" systemd-run --user --wait --collect -p MemoryAccounting=yes \
+           env SUFUN_MEMWATCH_TEST=1 SUFUN_MEMWATCH_RUN="$d/run" SUFUN_MEMWATCH_PERSIST="$d/state" \
+           /usr/lib/sufun/memwatch 2>&1 | sed -n 's/.*Memory peak: *\([0-9.]*\)\([KMG]\).*/\1 \2/p')
+  say "INFO memwatch memory peak: ${peak:-?}"
+  check memwatch-small bash -c 'read -r v unit <<< "$1"; [[ -n $v ]] && { [[ $unit == K ]] || { [[ $unit == M ]] && (( ${v%.*} < 12 )); }; }' _ "$peak"
+  tail -n 8 "$d/log" | while IFS= read -r l; do say "LOG $l"; done
+  ubus "$u" systemctl --user stop sufun-memtest-hog.service
+  rm -f "$home/.config/systemd/user/sufun-memtest-hog.service"
+}
+
+# --- graphical installer: shows its first question, then the test cancels ---
+installer_gui_test() {  # installer_gui_test <user>
+  local u=$1 i
+  as_user "$u" /usr/local/bin/sufun-install-gui --test-cancel >/dev/null 2>&1
+  for ((i = 0; i < 90; i++)); do [[ -s /run/sufun-install/q.json ]] && break; sleep 1; done
+  sleep 4; say "SHOT installer"
+  for ((i = 0; i < 60; i++)); do grep -q 'GUI-CANCELLED' /run/sufun-install/log 2>/dev/null && break; sleep 1; done
+  say "INFO installer window: $(head -c 300 /run/sufun-install/q.json 2>/dev/null)"
+  check installer-gui-question grep -q 'GUI-QUESTION 1 MODE' /run/sufun-install/log
+  check installer-gui-cancel   grep -q 'GUI-CANCELLED' /run/sufun-install/log
+}
+
+# --- RAM: what the desktop's "background services" are, and live write space ---
+ram_details() {  # ram_details <user>
+  local u=$1 p
+  say "INFO ram available $(awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo) MB, swap used $(free -m | awk '/^Swap:/ {print $3}') MB"
+  for p in $(pgrep -u "$u"); do
+    printf '%s %s\n' "$(awk '/^Pss:/ {print int($2/1024)}' "/proc/$p/smaps_rollup" 2>/dev/null || echo 0)" "$(tr -d '\0' < "/proc/$p/comm" 2>/dev/null)"
+  done | awk '{s[$2] += $1} END {for (n in s) if (s[n] >= 3) print s[n], n}' | sort -nr | head -n 25 \
+    | while read -r mb name; do say "INFO ram user-process $name $mb MB"; done
+  if [[ -d /run/archiso/cowspace ]]; then
+    say "INFO live write space (cowspace) used: $(du -sm /run/archiso/cowspace 2>/dev/null | cut -f1) MB of $(df -m --output=size /run/archiso/cowspace | tail -n1 | tr -d ' ') MB"
+    du -xm -d 4 /run/archiso/cowspace 2>/dev/null | sort -nr | sed -n '2,9p' | while read -r mb path; do say "INFO cowspace $mb MB ${path#/run/archiso/cowspace}"; done
+  fi
+}
+
 # If something went wrong: first-login's messages and widget errors, to the serial log
 diagnose() {
   journalctl -b --no-pager -o cat 2>/dev/null \
@@ -276,12 +576,25 @@ case "$MODE" in
     if [[ $src == /dev/mmcblk* ]] && [[ $(cat "/sys/block/$(lsblk -no PKNAME "$src")/device/type" 2>/dev/null) == SD ]]; then
       say "PASS live-from-sd"
     fi
+    [[ $(grep -ow splash /proc/cmdline) ]] && say "INFO boot splash (Plymouth) requested on the kernel command line"
+    welcome_shot     # first-start chooser (language, time zone, keyboard)
     if wait_for 1200 desktop_up sufun; then
       wait_for 240 first_login_done sufun
       sleep 30      # screenshots of the finished desktop
       check_image
       check_desktop sufun
+      check_system
+      check_welcome sufun
+      check_desktop_extras sufun
+      check_sensors sufun
       ram_report sufun
+      ram_details sufun
+      installer_gui_test sufun
+      check_firefox sufun
+      memwatch_test sufun
+      memory_pressure_test sufun
+      check_firefox_disable sufun
+      ram_details sufun
       say "LIVE-DESKTOP-OK"
     else
       say "LIVE-DESKTOP-TIMEOUT"
@@ -328,6 +641,14 @@ case "$MODE" in
     check fstab-no-subvolid  bash -c '! grep -q subvolid /etc/fstab'
     check timeshift-config   test -f /etc/timeshift/timeshift.json
     check os-release         grep -q '^ID=sufun' /etc/os-release
+    check_system
+    # The installer applied the live choice: the chooser must not run again
+    check welcome-not-again  bash -c '[[ -f /var/lib/sufun/welcome-done ]] && ! pgrep -u sufun-oobe >/dev/null'
+    if [[ -f /etc/sufun/boot-stage.conf ]]; then
+      check rtc-local-time-sd grep -qx LOCAL /etc/adjtime      # Windows stays: clock in local time
+    else
+      check rtc-utc-emmc      grep -qx UTC /etc/adjtime
+    fi
     sleep 20      # time for a screenshot of the login screen
     greeter_check
     # Test only: log the test user in automatically to check the Korean desktop.
@@ -342,6 +663,10 @@ case "$MODE" in
       check korean-language   grep -q '^LANG=ko_KR' /etc/locale.conf
       check korean-folders    test -d /home/tester/바탕화면 -a -d /home/tester/문서 -a -d /home/tester/다운로드
       check_desktop tester
+      check_welcome tester
+      check_desktop_extras tester
+      check_sensors tester
+      ram_details tester
       logout_screen tester
     else
       say "FAIL desktop-login"

@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# SUFUN first-start window (sufun-welcome-ui.service, user "sufun-oobe"):
+# a KWin of its own with one full-screen QML window (/usr/share/sufun/welcome/Main.qml).
+# The window prints "SUFUN-CHOICE LANG=.. TZ=.. KB=.." when the user taps "시작";
+# that line is saved to $RUNTIME_DIRECTORY/choice for /usr/lib/sufun/welcome-apply.
+set -u
+RUN=${RUNTIME_DIRECTORY:-/run/sufun-welcome}
+rm -f "$RUN/choice" "$RUN/choice.tmp"
+
+# --- the session: KWin on this seat, ends when the window ends ---
+chvt 7 2>/dev/null || true     # our own screen (tty7) in front = an active session for KWin
+export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-$RUN}
+export HOME=${STATE_DIRECTORY:-/var/lib/sufun-oobe}
+export XDG_CURRENT_DESKTOP=KDE KDE_SESSION_VERSION=6
+cmd=(kwin_wayland --drm --no-lockscreen --no-global-shortcuts --locale1
+     --exit-with-session /usr/lib/sufun/welcome-ui)
+if [[ -z ${DBUS_SESSION_BUS_ADDRESS:-} && ! -S $XDG_RUNTIME_DIR/bus ]]; then
+  exec dbus-run-session -- "${cmd[@]}"
+fi
+exec "${cmd[@]}"

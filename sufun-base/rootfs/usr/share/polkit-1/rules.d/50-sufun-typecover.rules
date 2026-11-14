@@ -1,0 +1,11 @@
+// SUFUN: the user sitting at the Surface (active local session) may start ONE
+// system unit without a password: sufun-typecover-rebind.service, which only
+// re-probes the Type Cover touchpad. Nothing else is allowed by this rule.
+polkit.addRule(function (action, subject) {
+    if (action.id == "org.freedesktop.systemd1.manage-units" &&
+        action.lookup("unit") == "sufun-typecover-rebind.service" &&
+        action.lookup("verb") == "start" &&
+        subject.active && subject.local) {
+        return polkit.Result.YES;
+    }
+});

@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# Surface Go 3 Type Cover touchpad: keep it working (SUFUN).
+#
+# The problem: the touchpad was sometimes dead while the keyboard worked (once
+# after boot, and ALWAYS after logging out and in again); detaching and attaching
+# the cover fixed it.
+# Root cause (kernel 6.16+, hid-multitouch): when NO program has the touchpad open,
+# the kernel switches touch reporting off inside the touchpad, and on again when
+# a program opens it. At logout KWin closes every input device, so this off/on
+# happens every time, and the Type Cover sometimes ignores the "on" again.
+#
+#   typecover hold     (sufun-typecover.service) keeps every Type Cover touchpad
+#                      input device open (reads and throws away its events, no
+#                      grab: the desktop still gets all of them), so the kernel
+#                      never switches it off. Re-opens it after a re-attach.
+#   typecover rebind   re-probes the touchpad driver = what detaching and
+#                      re-attaching the cover does (keyboard and touchpad
+#                      disappear for about a second). Run at boot, after resume
+#                      and at every login (sufun-typecover-rebind.service).
+VID=045e
+log() { echo "sufun-typecover: $*"; }
+
+touchpads() {  # /dev/input/eventN of Microsoft (Type Cover) touchpads
+  local e n
+  for e in /sys/class/input/event*; do
+    [[ $(cat "$e/device/id/vendor" 2>/dev/null) == "$VID" ]] || continue
+    n=$(cat "$e/device/name" 2>/dev/null)
+    [[ $n == *[Tt]ouchpad* ]] && echo "/dev/input/${e##*/}"
+  done
+  return 0
+}
+hid_of() {  # the HID device (0003:045E:09B5.000N) behind an event node
+  local d; d=$(readlink -f "/sys/class/input/${1##*/}/device/device")
+  [[ ${d##*/} == 0003:045E:* ]] && echo "${d##*/}"
+}
+
+case ${1:-} in
+  hold)
+    declare -A held=()
+    while :; do
+      for dev in $(touchpads); do
+        [[ -n ${held[$dev]:-} ]] && kill -0 "${held[$dev]}" 2>/dev/null && continue
+        cat "$dev" > /dev/null 2>&1 &     # ends by itself when the cover is detached
+        held[$dev]=$!
+        log "holding $dev open ($(cat "/sys/class/input/${dev##*/}/device/name" 2>/dev/null))"
+      done
+      sleep 1
+    done ;;
+  rebind)
+    done_ids=" "
+    for dev in $(touchpads); do
+      id=$(hid_of "$dev") || continue
+      [[ -n $id && $done_ids != *" $id "* ]] || continue
+      drv=$(basename "$(readlink -f "/sys/bus/hid/devices/$id/driver")")
+      [[ $drv == hid-multitouch ]] || { log "$id uses driver '$drv', not touching it"; continue; }
+      log "re-probing touchpad $id"
+      echo -n "$id" > /sys/bus/hid/drivers/hid-multitouch/unbind
+      sleep 0.5
+      echo -n "$id" > /sys/bus/hid/drivers/hid-multitouch/bind || log "bind $id failed"
+      done_ids+="$id "
+    done
+    [[ $done_ids == " " ]] && log "no Type Cover touchpad found (cover detached?)"
+    exit 0 ;;
+  *) echo "usage: typecover hold|rebind" >&2; exit 2 ;;
+esac

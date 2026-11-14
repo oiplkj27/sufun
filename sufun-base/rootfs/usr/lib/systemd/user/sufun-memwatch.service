@@ -1,0 +1,10 @@
+# See /usr/lib/sufun/memwatch (restarts leaking desktop helpers when you are away)
+[Unit]
+Description=SUFUN memory leak cleanup (one check)
+After=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/sufun/memwatch
+Nice=10
+IOSchedulingClass=idle

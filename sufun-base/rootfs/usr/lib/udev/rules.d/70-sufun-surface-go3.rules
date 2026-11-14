@@ -1,0 +1,17 @@
+# Surface Go 3 power rules (SUFUN).
+
+# Type Cover (USB 045e:09b5, keyboard + touchpad): no USB autosuspend. When the
+# cover's USB interface sleeps and wakes up, its touchpad can stay dead while the
+# keyboard still works.
+ACTION=="add|change", SUBSYSTEM=="usb", ATTR{idVendor}=="045e", ATTR{idProduct}=="09b5", TEST=="power/control", ATTR{power/control}="on"
+
+# microSD reader (Realtek RTS522A, PCI 10ec:522a): never powered down while the
+# system runs. SUFUN may run from the card; waking the reader up again delayed
+# every read (and resume from sleep).
+ACTION=="add|change", SUBSYSTEM=="pci", ATTR{vendor}=="0x10ec", ATTR{device}=="0x522a", TEST=="power/control", ATTR{power/control}="on"
+
+# Lid (ACPI PNP0C0D): allowed to wake the Surface from sleep when you open the
+# cover. On the Go 3 the lid is reported by the embedded controller (EC event
+# _Q80), not by a separate wake GPE; the lid device itself must be a wake source.
+ACTION=="add|change", SUBSYSTEM=="acpi", KERNEL=="PNP0C0D:*", TEST=="power/wakeup", ATTR{power/wakeup}="enabled"
+ACTION=="add|change", SUBSYSTEM=="platform", KERNEL=="PNP0C0D:*", TEST=="power/wakeup", ATTR{power/wakeup}="enabled"

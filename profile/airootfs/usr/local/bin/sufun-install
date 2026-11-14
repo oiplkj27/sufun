@@ -43,24 +43,128 @@ if [[ ${SUFUN_AUTO:-0} == 1 ]]; then
   fi
 fi
 
-bold() { printf '\e[1m%s\e[0m\n' "$*"; }
+GUI=0
+IPC=/run/sufun-install           # questions/status for the window (root-owned, readable)
+if [[ ${1:-} == --gui ]]; then
+  (( AUTO )) && { echo "--gui and the test mode can't be used together" >&2; exit 1; }
+  GUI=1
+  exec 9>/run/sufun-install.lock
+  flock -n 9 || { echo "SUFUN 설치가 이미 실행 중입니다." >&2; exit 1; }
+  rm -rf "$IPC"; install -d -m 0755 "$IPC"
+  exec 3<&0 </dev/null              # answers from the window arrive on fd 3
+  exec >>"$IPC/log" 2>&1            # everything else: the log the window shows
+  # last lines of the log for the window's "details" view (no colors)
+  ( while sleep 1; do
+      tail -n 14 "$IPC/log" | sed 's/\x1b\[[0-9;]*m//g' > "$IPC/tail.tmp" && mv -f "$IPC/tail.tmp" "$IPC/tail"
+    done ) &
+  TAILPID=$!
+  trap 'kill $TAILPID 2>/dev/null || true' EXIT
+fi
+
+# Language of the questions: the one chosen at the first start
+W_LANG= W_TZ= W_KB=
+if [[ -f /etc/sufun/welcome.conf ]]; then
+  W_LANG=$(sed -n 's/^LANG=//p' /etc/sufun/welcome.conf)
+  W_TZ=$(sed -n 's/^TZ=//p' /etc/sufun/welcome.conf)
+  W_KB=$(sed -n 's/^KB=//p' /etc/sufun/welcome.conf)
+fi
+UI_KO=1
+[[ ${W_LANG:-${LANG:-ko}} == ko* ]] || UI_KO=0
+T() { if (( UI_KO )); then printf '%s' "$1"; else printf '%s' "$2"; fi; }
+
+js() {  # js <text>: as a JSON string
+  local x=$1
+  x=${x//\\/\\\\}; x=${x//\"/\\\"}; x=${x//$'\n'/\\n}; x=${x//$'\t'/\\t}
+  x=${x//$'\r'/}; x=${x//$'\e'/}
+  printf '"%s"' "$x"
+}
+QN=0 DETAIL= WORD= ASKTEXT=
+gui_q() {  # gui_q <type> <name> <title> <text> <default> [value|label ...] -> $REPLY
+  # Shows one page in the window and waits for its answer.
+  #   type: choice text password confirm yesno info error done
+  QN=$((QN + 1))
+  local o opts="" ko=false
+  (( UI_KO )) && ko=true
+  for o in "${@:6}"; do opts+="${opts:+,}{\"value\":$(js "${o%%|*}"),\"label\":$(js "${o#*|}")}"; done
+  printf '{"id":%d,"type":%s,"name":%s,"title":%s,"text":%s,"detail":%s,"default":%s,"word":%s,"ko":%s,"options":[%s]}\n' \
+    "$QN" "$(js "$1")" "$(js "$2")" "$(js "$3")" "$(js "$4")" "$(js "$DETAIL")" "$(js "$5")" "$(js "$WORD")" \
+    "$ko" "$opts" > "$IPC/q.tmp"
+  mv -f "$IPC/q.tmp" "$IPC/q.json"
+  echo "GUI-QUESTION $QN $2"
+  DETAIL= WORD=
+  local line
+  while IFS= read -r -u 3 line; do
+    case $line in
+      "SUFUN-ANSWER $QN "*) REPLY=${line#"SUFUN-ANSWER $QN "}; return 0 ;;
+      "SUFUN-ANSWER $QN")   REPLY=; return 0 ;;
+      SUFUN-CANCEL*)        cancelled ;;
+    esac
+  done
+  cancelled                         # the window was closed
+}
+cancelled() {
+  trap - ERR
+  echo "GUI-CANCELLED: $(T '취소했습니다. 아무것도 바뀌지 않았습니다.' 'Cancelled. Nothing was changed.')"
+  status "$(T '취소했습니다' 'Cancelled')"
+  exit 2
+}
+status() {  # the big line in the window while it works
+  if (( GUI )); then printf '%s\n' "$*" > "$IPC/status.tmp"; mv -f "$IPC/status.tmp" "$IPC/status"; fi
+  return 0
+}
+
+bold() { printf '\e[1m%s\e[0m\n' "$*"; status "$*"; }
 warn() { printf '\e[1;33m%s\e[0m\n' "$*"; }
 die()  {
+  trap - ERR
   printf '\e[1;31m오류: %s\e[0m\n' "$*" >&2
-  (( AUTO )) || read -rp "Enter를 누르면 닫힙니다..."
+  if (( GUI )); then
+    DETAIL=$(tail -n 12 "$IPC/log" | sed 's/\x1b\[[0-9;]*m//g')
+    gui_q error ERROR "$(T '설치할 수 없습니다' 'SUFUN could not be installed')" "$*" "" || true
+  elif (( ! AUTO )); then
+    read -rp "Enter를 누르면 닫힙니다..."
+  fi
   exit 1
 }
 trap 'die "설치 중 오류가 났습니다 (줄 $LINENO)"' ERR
-ask() {  # ask <NAME> <prompt> <default> -> answer in $ANS_<NAME>
+ask() {  # ask <NAME> <prompt> <default> [value|label ...] -> answer in $ANS_<NAME>
         # (in test mode the answer comes from $SUFUN_<NAME>)
-  local name=$1 prompt=$2 def=$3 ans envv="SUFUN_$1"
-  if (( AUTO )); then ans=${!envv:-$def}; else read -rp "$prompt [$def]: " ans; fi
+        # With value|label pairs it is a choice (a list in the window).
+  local name=$1 prompt=$2 def=$3 ans envv="SUFUN_$1" o
+  if (( AUTO )); then
+    ans=${!envv:-$def}
+  elif (( GUI )); then
+    if (( $# > 3 )); then gui_q choice "$name" "$prompt" "$ASKTEXT" "$def" "${@:4}"
+    else gui_q text "$name" "$prompt" "$ASKTEXT" "$def"; fi
+    ans=$REPLY
+  else
+    [[ -n $ASKTEXT ]] && echo "$ASKTEXT"
+    for o in "${@:4}"; do printf '  %s) %s\n' "${o%%|*}" "${o#*|}"; done
+    read -rp "$prompt [$def]: " ans
+  fi
+  ASKTEXT=
   printf -v "ANS_$name" '%s' "${ans:-$def}"
 }
 confirm_word() {  # confirm_word <WORD> <prompt>: the user must type WORD exactly
   (( AUTO )) && return 0
-  local ok; read -rp "$2" ok
-  [[ $ok == "$1" ]] || die "취소했습니다. 아무것도 바뀌지 않았습니다."
+  local ok
+  if (( GUI )); then
+    WORD=$1; gui_q confirm CONFIRM "$(T '마지막 확인' 'Final check')" "$2" ""; ok=$REPLY
+  else
+    read -rp "$2" ok
+  fi
+  [[ $ok == "$1" ]] || die "$(T '취소했습니다. 아무것도 바뀌지 않았습니다.' 'Cancelled. Nothing was changed.')"
+}
+yesno() {  # yesno <question> <default y|n>: true for yes
+  local r
+  if (( GUI )); then gui_q yesno YESNO "$1" "$ASKTEXT" "$2"; r=$REPLY; ASKTEXT=
+  else read -rp "$1 [$([[ $2 == y ]] && echo Y/n || echo y/N)]: " r; fi
+  [[ ${r:-$2} =~ ^[Yy] ]]
+}
+info_end() {  # info_end <title> <text>: show it, wait, exit 0 (nothing was installed)
+  if (( GUI )); then gui_q info INFO "$1" "$2" ""
+  else echo "$2"; read -rp "Enter를 누르면 닫힙니다..."; fi
+  exit 0
 }
 tlog() { (( AUTO )) && echo "SUFUN-TEST: $*" || true; }
 
@@ -151,25 +255,29 @@ card_speed() {
   echo $(( 8 * 1024 * 1000 / ms ))
 }
 
-(( AUTO )) || clear
+(( AUTO || GUI )) || clear
 bold "=== SUFUN 설치 (Microsoft Surface Go 3) ==="
+status "$(T '준비하는 중...' 'Getting ready...')"
 echo
 
 # --- checks ---
-[[ -d /sys/firmware/efi ]] || die "UEFI 모드로 부팅되지 않았습니다."
+[[ -d /sys/firmware/efi ]] || die "$(T 'UEFI 모드로 부팅되지 않았습니다.' 'The computer was not started in UEFI mode.')"
 curl -fsI --max-time 10 https://archlinux.org >/dev/null \
-  || die "인터넷 연결이 없습니다. 작업 표시줄의 네트워크 아이콘에서 Wi-Fi에 연결한 뒤 다시 실행하세요."
+  || die "$(T '인터넷 연결이 없습니다. 작업 표시줄의 네트워크 아이콘에서 Wi-Fi에 연결한 뒤 다시 실행하세요.' 'No internet connection. Connect to Wi-Fi with the network icon on the taskbar, then start the installer again.')"
 
-bold "이 컴퓨터의 저장장치:"
-for d in $(all_disks); do disk_line "$d"; done
-[[ -n $LIVE_DISK ]] && echo "  (지금 실행 중인 라이브 시스템: $LIVE_PART)"
+DISKS_TEXT=$(for d in $(all_disks); do disk_line "$d"; done
+             if [[ -n $LIVE_DISK ]]; then echo "  ($(T '지금 실행 중인 라이브 시스템' 'live system running from'): $LIVE_PART)"; fi)
+bold "$(T '이 컴퓨터의 저장장치:' 'Drives in this computer:')"
+echo "$DISKS_TEXT"
 echo
 
 # --- install mode ---
-ask MODE "설치 방법을 고르세요:
-  1) SD카드에 설치 (윈도우 유지)
-  2) 내부 저장장치에 설치 (윈도우 삭제)
-번호" 1
+DETAIL=$DISKS_TEXT
+ASKTEXT=$(T 'SD카드에 설치하면 Windows는 그대로 남고, SUFUN은 카드를 꽂았을 때만 켜집니다.' \
+            'On the microSD card, Windows stays and SUFUN starts only with the card inserted.')
+ask MODE "$(T '설치 방법을 고르세요' 'How do you want to install SUFUN?')" 1 \
+  "1|$(T 'SD카드에 설치 (윈도우 유지)' 'Install to the microSD card (keep Windows)')" \
+  "2|$(T '내부 저장장치에 설치 (윈도우 삭제)' 'Install to the internal drive (ERASES Windows)')"
 case $ANS_MODE in
   1|sd)   MODE=sd ;;
   2|emmc) MODE=emmc ;;
@@ -186,7 +294,8 @@ if [[ $MODE == sd ]]; then
     CARD=${CARDS[0]}
   else
     echo "microSD 카드:"; for d in "${CARDS[@]}"; do disk_line "$d"; done
-    ask DISK "어느 카드에 설치할까요?" "${CARDS[0]}"; CARD=$ANS_DISK
+    opts=(); for d in "${CARDS[@]}"; do opts+=("$d|$(disk_line "$d" | sed 's/^ *//')"); done
+    ask DISK "$(T '어느 카드에 설치할까요?' 'Which card?')" "${CARDS[0]}" "${opts[@]}"; CARD=$ANS_DISK
   fi
   [[ -b $CARD && $(disk_kind "$CARD") == sd ]] || die "$CARD 는 microSD 카드가 아닙니다."
 
@@ -224,10 +333,12 @@ Windows에서 sufun-sd-setup.ps1 을 'ISO가 내부 저장장치에 있음' 방�
   fi
   disk_line "$CARD"
   lsblk -o NAME,SIZE,FSTYPE,LABEL "$CARD"
+  DETAIL="$(disk_line "$CARD")
+$(lsblk -o NAME,SIZE,FSTYPE,LABEL "$CARD")"
   if [[ $CARD == "$LIVE_DISK" ]]; then
-    confirm_word YES "계속하려면 YES 를 입력하세요: "
+    confirm_word YES "$(T "SD카드 $CARD 의 빈 공간에 SUFUN을 설치합니다. 라이브 파티션과 Windows는 그대로 둡니다. 계속하려면 YES 를 입력하세요: " "SUFUN will be installed into the free space of the card $CARD. The live partition and Windows are kept. Type YES to continue: ")"
   else
-    confirm_word ERASE "카드를 지우고 계속하려면 ERASE 를 입력하세요: "
+    confirm_word ERASE "$(T "SD카드 $CARD 의 모든 데이터가 지워집니다 (Windows는 그대로). 카드를 지우고 계속하려면 ERASE 를 입력하세요: " "ALL data on the card $CARD will be erased (Windows is kept). Type ERASE to erase the card and continue: ")"
   fi
   DISK=$CARD
 else
@@ -241,15 +352,16 @@ else
   # shows up in this Surface's boot menu and starts, BEFORE Windows is erased.
   if (( ! AUTO )) && command -v sufun-windows-restore >/dev/null; then
     if sufun-windows-restore --boot-test-status >/dev/null 2>&1; then
-      read -rp "지난번 복원 테스트에서 부팅 메뉴에 'Windows Setup' 이 보였고, 고르면 Windows가 시작됐나요? [y/N]: " r
+      r=n
+      if yesno "$(T "지난번 복원 테스트에서 부팅 메뉴에 'Windows Setup' 이 보였고, 고르면 Windows가 시작됐나요?" "In the last restore test, did 'Windows Setup' appear in the boot menu, and did Windows start from it?")" n; then r=y; fi
       sufun-windows-restore --boot-test-remove || true
       if [[ ! ${r:-n} =~ ^[Yy] ]]; then
         warn "복원 테스트가 성공하지 않았습니다. Windows를 지우는 것은 권장하지 않습니다."
         warn "'SD카드에 설치 (윈도우 유지)' 를 고르거나, 문서를 보고 원인을 확인하세요."
       fi
     else
-      read -rp "Windows를 지우기 전에 '복원 드라이런'을 해 볼까요? (권장) [Y/n]: " r
-      if [[ ${r:-y} =~ ^[Yy] ]]; then
+      ASKTEXT=$(T "이 Surface는 USB로 부팅할 수 없습니다. Windows를 지운 뒤 돌아가는 방법은 SUFUN의 'Windows 복원' 뿐이므로, 먼저 'Windows Setup' 부팅 항목이 실제로 보이는지 시험해 보는 것을 권장합니다." "This Surface can't boot from USB. After Windows is erased, SUFUN's 'Windows restore' is the only way back, so test first that a 'Windows Setup' boot entry really appears.")
+      if yesno "$(T "Windows를 지우기 전에 '복원 드라이런'을 해 볼까요? (권장)" "Do a 'restore dry run' before erasing Windows? (recommended)")" y; then
         sufun-windows-restore --boot-test-create || die "복원 테스트 항목을 만들지 못했습니다. Windows를 지우지 마세요."
         echo
         bold "복원 드라이런 준비 완료. 다음을 해 보세요:"
@@ -258,11 +370,20 @@ else
         echo " 3. 'Boot configuration' 에 'Windows Setup' 항목이 보이는지 확인하고,"
         echo "    그 항목을 왼쪽으로 밀어(swipe) 바로 부팅합니다. Windows가 시작되면 성공입니다."
         echo "    (실제 복원 때는 이 자리에서 Windows 설치 프로그램이 시작됩니다.)"
-        echo " 4. Windows에서 '고급 시작 → 장치 사용 → SUFUN (SD)' 로 다시 SUFUN 라이브를 켜고"
+        echo " 4. 다시 Surface UEFI → Boot configuration → 'SUFUN (SD)' 밀기로 SUFUN 라이브를 켜고"
         echo "    설치 프로그램을 다시 실행하세요. 테스트 항목은 그때 지웁니다."
         echo "Windows는 지우지 않았습니다."
-        read -rp "Enter를 누르면 닫힙니다..."
-        exit 0
+        info_end "$(T '복원 드라이런 준비 완료' 'Restore dry run is ready')" "$(T "1. 컴퓨터를 끕니다.
+2. 볼륨 위(+) 버튼을 누른 채 전원 버튼을 눌러 Surface UEFI를 엽니다.
+3. 'Boot configuration' 에 'Windows Setup' 항목이 보이는지 확인하고, 그 항목을 왼쪽으로 밀어(swipe) 바로 부팅합니다. Windows가 시작되면 성공입니다.
+4. 다시 Surface UEFI → Boot configuration → 'SUFUN (SD)' 밀기로 SUFUN 라이브를 켜고 설치 프로그램을 다시 실행하세요. 테스트 항목은 그때 지웁니다.
+
+Windows는 지우지 않았습니다." "1. Shut the computer down.
+2. Hold Volume Up (+) and press the power button: Surface UEFI opens.
+3. In 'Boot configuration', check that 'Windows Setup' is listed and swipe it to the left to start it. If Windows starts, the test worked.
+4. Start the SUFUN live system again (Surface UEFI → Boot configuration → swipe 'SUFUN (SD)') and run the installer again; it removes the test entry then.
+
+Windows was not erased.")"
       fi
     fi
   fi
@@ -273,7 +394,8 @@ else
   done
   (( ${#TARGETS[@]} )) || die "설치할 내부 저장장치를 찾을 수 없습니다."
   echo "내부 저장장치:"; for d in "${TARGETS[@]}"; do disk_line "$d"; done
-  ask DISK "어느 저장장치에 설치할까요?" "${TARGETS[0]}"; DISK=$ANS_DISK
+  opts=(); for d in "${TARGETS[@]}"; do opts+=("$d|$(disk_line "$d" | sed 's/^ *//')"); done
+  ask DISK "$(T '어느 저장장치에 설치할까요?' 'Which drive?')" "${TARGETS[0]}" "${opts[@]}"; DISK=$ANS_DISK
   [[ -b $DISK ]] || die "$DISK 는 저장장치가 아닙니다."
   [[ $DISK != "$LIVE_DISK" ]] || die "$DISK 에서 지금 라이브 시스템이 실행 중입니다. 이 저장장치는 지울 수 없습니다."
   [[ $(disk_kind "$DISK") == internal ]] || die "$DISK 는 내부 저장장치가 아닙니다 ($(kind_label "$(disk_kind "$DISK")")). 이 방법은 내부 저장장치에만 설치합니다."
@@ -285,11 +407,18 @@ fi
 tlog "TARGET $DISK"
 
 # --- user settings ---
-ask HOST "컴퓨터 이름" sufun;          HOST_NAME=$ANS_HOST
-ask USER "사용자 이름 (영문 소문자)" user; USER_NAME=$ANS_USER
-[[ $USER_NAME =~ ^[a-z_][a-z0-9_-]*$ ]] || die "사용자 이름은 영문 소문자/숫자만 쓸 수 있습니다."
+ask HOST "$(T '컴퓨터 이름' 'Computer name')" sufun;          HOST_NAME=$ANS_HOST
+[[ $HOST_NAME =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,62}$ ]] || die "$(T '컴퓨터 이름은 영문/숫자/- 만 쓸 수 있습니다.' 'The computer name may only contain letters, digits and -.')"
+ask USER "$(T '사용자 이름 (영문 소문자)' 'User name (lowercase letters)')" user; USER_NAME=$ANS_USER
+[[ $USER_NAME =~ ^[a-z_][a-z0-9_-]*$ ]] || die "$(T '사용자 이름은 영문 소문자/숫자만 쓸 수 있습니다.' 'The user name may only contain lowercase letters and digits.')"
 if (( AUTO )); then
   PASS1=${SUFUN_PASS:?}
+elif (( GUI )); then
+  # The window asks twice and answers only when both are the same and not empty
+  gui_q password PASSWORD "$(T '암호를 정하세요' 'Choose a password')" \
+    "$(T '로그인, 잠금 화면, 관리자 작업(업데이트)에 씁니다.' 'For login, the lock screen and admin tasks (updates).')" ""
+  PASS1=$REPLY
+  [[ -n $PASS1 ]] || die "$(T '암호가 비어 있습니다.' 'The password is empty.')"
 else
   while :; do
     read -rsp "암호: " PASS1; echo
@@ -298,15 +427,33 @@ else
     echo "암호가 비어 있거나 서로 다릅니다. 다시 입력하세요."
   done
 fi
-ask TZ "시간대" Asia/Seoul;            TZONE=$ANS_TZ
-[[ -f /usr/share/zoneinfo/$TZONE ]] || die "알 수 없는 시간대: $TZONE"
-ask LANG "언어: 1) English  2) 한국어" 1
-[[ $ANS_LANG == 2 ]] && LANG_SEL=ko_KR.UTF-8 || LANG_SEL=en_US.UTF-8
+# Language, time zone and keyboard: from the first-start chooser (not asked twice).
+# Test mode: SUFUN_TZ, SUFUN_LANG (1 English, 2 Korean). Without a chooser result
+# (e.g. the chooser could not start) they are asked here.
+LANGS=/usr/share/sufun/languages.tsv
+lang_default() { awk -F'\t' -v l="$1" -v c="$2" '!/^#/ && $1 == l {print $c; exit}' "$LANGS"; }
+if (( AUTO )); then
+  if [[ ${SUFUN_LANG:-1} == 2 ]]; then LANG_SEL=ko_KR.UTF-8; else LANG_SEL=en_US.UTF-8; fi
+  TZONE=${SUFUN_TZ:-Asia/Seoul}; KB_SEL=$(lang_default "$LANG_SEL" 4)
+elif [[ -n $W_LANG && -n $W_TZ && -n $W_KB ]]; then
+  LANG_SEL=$W_LANG TZONE=$W_TZ KB_SEL=$W_KB
+  echo "$(T '언어/시간대/키보드 (처음 시작할 때 고른 값)' 'Language/time zone/keyboard (chosen at the first start)'): $LANG_SEL, $TZONE, $KB_SEL"
+else
+  opts=(); while IFS=$'\t' read -r l n _; do [[ $l == \#* || -z $l ]] || opts+=("$l|$n"); done < "$LANGS"
+  ask LANG "$(T '언어' 'Language')" ko_KR.UTF-8 "${opts[@]}"; LANG_SEL=$ANS_LANG
+  ask TZ "$(T '시간대 (예: Asia/Seoul, Europe/Berlin)' 'Time zone (e.g. Asia/Seoul, Europe/Berlin)')" "$(lang_default "$LANG_SEL" 3)"; TZONE=$ANS_TZ
+  opts=(); while IFS=$'\t' read -r k n _; do [[ $k == \#* || -z $k ]] || opts+=("$k|$n"); done < /usr/share/sufun/keyboards.tsv
+  ask KB "$(T '키보드' 'Keyboard')" "$(lang_default "$LANG_SEL" 4)" "${opts[@]}"; KB_SEL=$ANS_KB
+fi
+[[ -n $(lang_default "$LANG_SEL" 1) ]] || die "$(T '알 수 없는 언어' 'Unknown language'): $LANG_SEL"
+[[ $TZONE =~ ^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$ && -f /usr/share/zoneinfo/$TZONE ]] || die "$(T '알 수 없는 시간대' 'Unknown time zone'): $TZONE"
 
 if [[ $MODE == emmc ]]; then
   echo
   bold "마지막 확인: $DISK 의 모든 데이터가 지워집니다 (Windows 포함)."
-  confirm_word ERASE "계속하려면 ERASE 를 입력하세요: "
+  DETAIL="$(disk_line "$DISK")
+$(lsblk -o NAME,SIZE,FSTYPE,LABEL "$DISK")"
+  confirm_word ERASE "$(T "$DISK 의 모든 데이터가 지워집니다 (Windows 포함). 계속하려면 ERASE 를 입력하세요: " "ALL data on $DISK will be erased (Windows too). Type ERASE to continue: ")"
   # A leftover dry-run entry would point at the Windows that is erased now.
   command -v sufun-windows-restore >/dev/null && sufun-windows-restore --boot-test-remove >/dev/null 2>&1 || true
 fi
@@ -354,8 +501,8 @@ else
       warn "    매일 쓰기에는 느리게 느껴질 수 있습니다 (프로그램 시작, 업데이트, 브라우저)."
       warn "    'A2' 표시가 있는 카드(애플리케이션 성능 등급 A2)를 권장합니다."
       if (( ! AUTO )); then
-        read -rp "그래도 이 카드에 설치할까요? [y/N]: " r
-        if [[ ! ${r:-n} =~ ^[Yy] ]]; then
+        ASKTEXT=$(T "4K 무작위 쓰기 $((kbs / 1000)).$((kbs % 1000 / 100)) MB/s (기준 2 MB/s). 매일 쓰기에는 느리게 느껴질 수 있습니다. 'A2' 표시가 있는 카드를 권장합니다." "4K random writes $((kbs / 1000)).$((kbs % 1000 / 100)) MB/s (2 MB/s recommended). It may feel slow every day; an 'A2' card is recommended.")
+        if ! yesno "$(T '이 카드는 작은 파일 쓰기가 느립니다. 그래도 이 카드에 설치할까요?' 'This card is slow with small files. Install to it anyway?')" n; then
           [[ -n $ROOT_START ]] && { sfdisk --delete --no-reread "$CARD" "$PN" || true; partx -d --nr "$PN" "$CARD" || true; }
           die "취소했습니다. 카드에 만든 빈 파티션은 다시 지웠습니다."
         fi
@@ -398,7 +545,7 @@ INSTALL_CONF=/tmp/sufun-pacman-install.conf
 cp "$TARGET_CONF" "$INSTALL_CONF"
 printf '\n[sufun-local]\nSigLevel = Optional TrustAll\nServer = file://%s/repo\n' "$SHARE" >> "$INSTALL_CONF"
 
-bold "패키지를 내려받아 설치하는 중 (10-30분, SD카드는 더 걸릴 수 있습니다)"
+bold "$(T '패키지를 내려받아 설치하는 중 (10-30분, SD카드는 더 걸릴 수 있습니다)' 'Downloading and installing packages (10-30 minutes, longer on a microSD card)')"
 # sufun-base pulls in the whole desktop. The desktop list is also given directly,
 # so the explicit driver choices (vulkan-intel, lib32-mesa...) are used by pacman.
 mapfile -t PKGS < <(sed -e 's/#.*//' -e 's/[[:space:]]//g' -e '/^$/d' "$SHARE/install.txt" "$SHARE/desktop.txt")
@@ -468,7 +615,8 @@ sed -i -e 's/^DEFAULT_INPUT_POLICY=.*/DEFAULT_INPUT_POLICY="DROP"/' \
 # --- boot options ---
 ROOT_UUID=$(blkid -s PARTUUID -o value "$ROOT_PART")
 # quiet + splash = SUFUN boot screen (Plymouth) instead of text
-OPTS="root=PARTUUID=$ROOT_UUID rootflags=subvol=@ rw quiet splash loglevel=3 nowatchdog"
+# usbcore.quirks=045e:09b5:g: the Type Cover touchpad starts reliably (delayed USB init)
+OPTS="root=PARTUUID=$ROOT_UUID rootflags=subvol=@ rw quiet splash loglevel=3 nowatchdog usbcore.quirks=045e:09b5:g"
 # Test mode only (never on a real install): serial console for the test log, and
 # plymouth.ignore-serial-consoles so Plymouth still draws the SUFUN splash on the
 # screen (with a serial console it would fall back to text) for the CI screenshots.
@@ -503,15 +651,22 @@ EOF
 fi
 
 # --- system config ---
-bold "시스템 설정 중"
-arch-chroot /mnt /bin/bash -e -s -- "$HOST_NAME" "$USER_NAME" "$TZONE" "$LANG_SEL" "$MODE" <<'CHROOT'
-HOST_NAME=$1 USER_NAME=$2 TZONE=$3 LANG_SEL=$4 MODE=$5
-ln -sf "/usr/share/zoneinfo/$TZONE" /etc/localtime
-hwclock --systohc
-sed -i -E 's/^#(en_US\.UTF-8|ko_KR\.UTF-8)/\1/' /etc/locale.gen
+bold "$(T '시스템 설정 중' 'Configuring the system')"
+# Language, time zone, keyboard (console, Plasma, Fcitx5): the same code as the
+# first-start chooser, into the new system. It also marks the chooser as done
+# there, so the installed system does not ask again.
+/usr/lib/sufun/welcome-apply --root /mnt "$LANG_SEL" "$TZONE" "$KB_SEL"
+# Every language the chooser offers is generated, so it can be switched later
+# in System Settings without extra steps.
+LOCALES=$(awk -F'\t' '!/^#/ && NF {print $1}' /usr/share/sufun/languages.tsv | tr '\n' ' ')
+arch-chroot /mnt /bin/bash -e -s -- "$HOST_NAME" "$USER_NAME" "$MODE" "$LOCALES" <<'CHROOT'
+HOST_NAME=$1 USER_NAME=$2 MODE=$3 LOCALES=$4
+# Hardware clock: UTC on the internal install (no Windows left). On the SD card
+# install Windows stays, and Windows keeps the clock in local time: do the same,
+# so neither system shows the wrong time after the other one ran.
+if [[ $MODE == sd ]]; then hwclock --systohc --localtime; else hwclock --systohc --utc; fi
+for l in $LOCALES; do sed -i "s/^#\(${l//./\\.} \)/\1/" /etc/locale.gen; done
 locale-gen
-echo "LANG=$LANG_SEL" > /etc/locale.conf
-echo "KEYMAP=us" > /etc/vconsole.conf
 echo "$HOST_NAME" > /etc/hostname
 printf '127.0.0.1 localhost\n::1 localhost\n127.0.1.1 %s\n' "$HOST_NAME" > /etc/hosts
 useradd -m -G wheel,video,audio,input -s /bin/bash "$USER_NAME"
@@ -603,16 +758,28 @@ umount -R /mnt
 trap - ERR
 echo
 if [[ $MODE == sd ]]; then
-  bold "설치 완료! SUFUN이 microSD 카드에 설치되었습니다. Windows는 그대로 있습니다."
-  echo "SUFUN을 켜려면: 카드를 꽂은 채로 Windows의 '고급 시작 → 장치 사용 → SUFUN (SD)'"
-  echo "또는 Surface UEFI의 Boot configuration에서 'SUFUN (SD)' 를 고르세요."
-  echo "카드를 빼면 SUFUN은 켜지지 않고, Windows는 평소처럼 켜집니다."
+  DONE_T=$(T "설치 완료! SUFUN이 microSD 카드에 설치되었습니다. Windows는 그대로 있습니다." "Done! SUFUN is installed on the microSD card. Windows is still there.")
+  DONE_X=$(T "SUFUN을 켜려면: 카드를 꽂은 채로 Surface를 끄고, 볼륨 위(+) 버튼을 누른 채 전원 버튼 → Surface UEFI → Boot configuration → 'SUFUN (SD)' 를 왼쪽으로 밀기.
+(Windows의 '고급 시작 → 장치 사용' 에는 'SUFUN (SD)' 가 나오지 않습니다.)
+카드를 빼면 SUFUN은 켜지지 않고, Windows는 평소처럼 켜집니다." "To start SUFUN: with the card inserted, shut down, hold Volume Up (+) and press power → Surface UEFI → Boot configuration → swipe 'SUFUN (SD)' to the left.
+(Windows' 'Advanced startup → Use a device' does not list 'SUFUN (SD)'.)
+Without the card, Windows starts as usual.")
 else
-  bold "설치 완료! 다시 시작하세요."
-  echo "Windows로 돌아가려면: SUFUN의 'Windows 복원' (docs/windows-restore-ko.md)."
+  DONE_T=$(T "설치 완료! 다시 시작하세요." "Done! Restart the computer.")
+  DONE_X=$(T "Windows로 돌아가려면: SUFUN의 'Windows 복원' (docs/windows-restore-ko.md)." "To go back to Windows later: SUFUN's 'Windows restore' (docs/windows-restore-ko.md).")
 fi
+bold "$DONE_T"
+echo "$DONE_X"
 if (( AUTO )); then echo "SUFUN-TEST: INSTALL-OK"; exit 0; fi
+TIP=$(T "팁: 지금 Surface UEFI 암호를 설정해 이 Surface를 보호하세요 (README의 'UEFI 암호')." "Tip: protect this Surface with a UEFI password now (see the README, 'UEFI 암호').")
 echo
-echo "Tip: protect this Surface with a UEFI password now (see the README, 'UEFI 암호')."
+echo "$TIP"
+if (( GUI )); then
+  gui_q "done" DONE "$DONE_T" "$DONE_X
+
+$TIP" restart "restart|$(T '지금 다시 시작' 'Restart now')" "close|$(T '닫기' 'Close')"
+  [[ $REPLY == restart ]] && systemctl reboot
+  exit 0
+fi
 read -rp "지금 다시 시작할까요? [Y/n]: " r
 [[ ${r:-y} =~ ^[Yy] ]] && systemctl reboot

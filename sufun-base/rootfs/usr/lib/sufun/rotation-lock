@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Screen rotation lock (tray toggle "화면 회전 잠금" / "Rotation lock").
+#   rotation-lock status   prints "locked" or "auto"
+#   rotation-lock toggle   switches, applies it now, prints the new state
+# The rule itself is in /usr/lib/sufun/input-switch: with the Type Cover open the
+# screen is always landscape anyway; the lock matters in tablet mode.
+LOCK="${XDG_CONFIG_HOME:-$HOME/.config}/sufun/rotation-lock"
+case ${1:-status} in
+  toggle)
+    if [[ -e $LOCK ]]; then rm -f "$LOCK"; else mkdir -p "${LOCK%/*}" && : > "$LOCK"; fi
+    /usr/lib/sufun/input-switch rotation >/dev/null 2>&1 ;;
+esac
+[[ -e $LOCK ]] && echo locked || echo auto

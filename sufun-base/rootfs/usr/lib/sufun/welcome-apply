@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# SUFUN first start, root part (sufun-welcome.service): checks the choice made in
+# the chooser window (/run/sufun-welcome/choice, written by the unprivileged user
+# sufun-oobe) against SUFUN's own lists and applies it BEFORE the login screen /
+# live desktop starts, so no logout is ever needed for the language.
+#   LANG -> /etc/locale.conf + systemd manager environment (login screen, sessions)
+#   TZ   -> /etc/localtime (timedatectl)
+#   KB   -> console keymap, Plasma/KWin layout (/etc/xdg/kxkbrc), Fcitx5 input methods
+# Also usable by the installer: welcome-apply --root <dir> LANG TZ KB
+# (writes the same files into an installed system, no running services touched).
+set -u
+DATA=/usr/share/sufun
+CHOICE=/run/sufun-welcome/choice
+log() { echo "sufun-welcome: $*"; }
+
+ROOT=
+if [[ ${1:-} == --root ]]; then
+  ROOT=${2:?}; L=${3:?}; Z=${4:?}; K=${5:?}
+else
+  if [[ ! -s $CHOICE ]]; then
+    log "no choice was made (window closed, failed or timed out): settings unchanged"
+    exit 0
+  fi
+  L= Z= K=
+  for kv in $(head -c 512 "$CHOICE"); do
+    case $kv in
+      LANG=*) L=${kv#LANG=} ;;
+      TZ=*)   Z=${kv#TZ=} ;;
+      KB=*)   K=${kv#KB=} ;;
+    esac
+  done
+  rm -f "$CHOICE"
+fi
+
+# --- check everything against our own lists (never trust the window's text) ---
+lang_ok() { awk -F'\t' -v l="$1" '!/^#/ && $1 == l {f=1} END {exit !f}' "$DATA/languages.tsv"; }
+kb_line() { awk -F'\t' -v k="$1" '!/^#/ && $1 == k {print; exit}' "$DATA/keyboards.tsv"; }
+lang_ok "$L" || { log "refused language '$L'"; L=; }
+if [[ ! $Z =~ ^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$ || ! -f /usr/share/zoneinfo/$Z || $Z == *..* ]]; then
+  log "refused time zone '$Z'"; Z=
+fi
+KBL=$(kb_line "$K")
+[[ -n $KBL ]] || { log "refused keyboard '$K'"; K=; }
+[[ -n $L || -n $Z || -n $K ]] || exit 0
+
+# --- language ---
+if [[ -n $L ]]; then
+  echo "LANG=$L" > "$ROOT/etc/locale.conf"
+  if [[ -z $ROOT ]]; then
+    # Services started from now on (SDDM, the user session) get the new language
+    systemctl set-environment "LANG=$L"
+    systemctl unset-environment LANGUAGE LC_ALL LC_MESSAGES LC_CTYPE 2>/dev/null || true
+  fi
+  log "language $L"
+fi
+
+# --- time zone ---
+if [[ -n $Z ]]; then
+  if [[ -z $ROOT ]] && timedatectl set-timezone "$Z" 2>/dev/null; then :; else
+    ln -sf "../usr/share/zoneinfo/$Z" "$ROOT/etc/localtime"
+  fi
+  log "time zone $Z"
+fi
+
+# --- keyboard ---
+if [[ -n $K ]]; then
+  IFS=$'\t' read -r _ _ xkb keymap ims <<< "$KBL"
+  echo "KEYMAP=$keymap" > "$ROOT/etc/vconsole.conf"
+  # Plasma/KWin layout for every user (users can still change it in Settings)
+  mkdir -p "$ROOT/etc/xdg"
+  if [[ $xkb == us ]]; then
+    rm -f "$ROOT/etc/xdg/kxkbrc"
+  else
+    printf '# Written by the SUFUN first-start chooser (keyboard: %s)\n[Layout]\nLayoutList=%s\nUse=true\n' "$K" "$xkb" > "$ROOT/etc/xdg/kxkbrc"
+  fi
+  # SDDM's KWin (--locale1) and X11 apps read the layout from systemd-localed
+  mkdir -p "$ROOT/etc/X11/xorg.conf.d"
+  printf 'Section "InputClass"\n  Identifier "system-keyboard"\n  MatchIsKeyboard "on"\n  Option "XkbLayout" "%s"\nEndSection\n' "$xkb" \
+    > "$ROOT/etc/X11/xorg.conf.d/00-keyboard.conf"
+  # Fcitx5: the same layout, plus Korean (Hangul) only for the Korean keyboard
+  {
+    echo "# Fcitx5 input methods for every new user, from the SUFUN first-start chooser ($K)."
+    echo "[Groups/0]"; echo "Name=Default"; echo "Default Layout=$xkb"
+    [[ $ims == *hangul* ]] && echo "DefaultIM=hangul" || echo "DefaultIM=keyboard-$xkb"
+    i=0
+    IFS=',' read -ra items <<< "$ims"
+    for im in "${items[@]}"; do
+      printf '\n[Groups/0/Items/%d]\nName=%s\nLayout=\n' "$i" "$im"; i=$((i + 1))
+    done
+    printf '\n[GroupOrder]\n0=Default\n'
+  } > "$ROOT/etc/xdg/fcitx5/profile"
+  log "keyboard $K ($xkb, console $keymap, fcitx5 $ims)"
+fi
+
+# For the installer ("not asked twice") and so the chooser is not shown again
+mkdir -p "$ROOT/etc/sufun" "$ROOT/var/lib/sufun"
+printf 'LANG=%s\nTZ=%s\nKB=%s\n' "$L" "$Z" "$K" > "$ROOT/etc/sufun/welcome.conf"
+touch "$ROOT/var/lib/sufun/welcome-done"
+exit 0

@@ -1,0 +1,10 @@
+# Re-probe the Type Cover touchpad (like detaching and re-attaching the cover).
+# Started at boot (by sufun-typecover.service), after resume (system-sleep hook)
+# and at every login (user service sufun-typecover-login, allowed by polkit).
+[Unit]
+Description=SUFUN: re-probe the Type Cover touchpad
+After=systemd-udevd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/sufun/typecover rebind

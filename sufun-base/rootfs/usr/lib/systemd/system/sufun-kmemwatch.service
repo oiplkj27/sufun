@@ -1,0 +1,8 @@
+# See /usr/lib/sufun/kmemwatch (kernel memory leak check, never restarts anything)
+[Unit]
+Description=SUFUN kernel memory check
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/sufun/kmemwatch
+Nice=10

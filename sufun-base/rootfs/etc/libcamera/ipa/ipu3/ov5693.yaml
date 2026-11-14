@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: CC0-1.0
+# SUFUN: tuning for the Surface Go 3 FRONT camera (OV5693) with libcamera's IPU3
+# image processing. libcamera has no file for this sensor and used its generic
+# "uncalibrated.yaml", whose auto exposure aims for a fairly dark picture
+# (relative luminance 0.16). 0.25 = noticeably brighter faces in video calls.
+# Same algorithms as uncalibrated.yaml otherwise. Delete this file to go back.
+%YAML 1.1
+---
+version: 1
+algorithms:
+  - Af:
+  - Agc:
+      relativeLuminanceTarget: [ 0, 0.25, 100000, 0.25 ]
+  - Awb:
+  - BlackLevelCorrection:
+  - ToneMapping:
+...

@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Reads the files of the start menu, search (KRunner), the power/logout screen,
+# the lock screen and the on-screen keyboard into memory once after login, in the
+# background with the lowest disk priority. Only when SUFUN runs from a microSD
+# card (live system or "SD카드에 설치"): there every first open had to wait for
+# the slow card (~23 MB/s, compressed). About 60 MB of file cache, which the
+# kernel drops again by itself if the memory is needed.
+root=$(findmnt -no SOURCE /run/archiso/bootmnt 2>/dev/null || findmnt -no SOURCE / 2>/dev/null)
+root=${root%%[*}
+disk=$(lsblk -no PKNAME "$root" 2>/dev/null | head -n1)
+[[ $(cat "/sys/block/$disk/device/type" 2>/dev/null) == SD ]] || exit 0
+sleep 20   # let the desktop finish starting first
+files=(
+  /usr/bin/krunner /usr/lib/libKF6Runner.so* /usr/lib/qt6/plugins/kf6/krunner
+  /usr/share/plasma/plasmoids/org.kde.plasma.kickoff /usr/lib/qt6/plugins/plasma/applets/org.kde.plasma.kickoff.so
+  /usr/lib/qt6/qml/org/kde/plasma/private/kicker
+  /usr/lib/ksmserver-logout-greeter /usr/share/plasma/look-and-feel/org.kde.breeze.desktop/contents/logout
+  /usr/lib/kscreenlocker_greet /usr/share/plasma/look-and-feel/org.kde.breeze.desktop/contents/lockscreen
+  /usr/bin/plasma-keyboard /usr/bin/fcitx5
+)
+find "${files[@]}" -type f -size -20M -print0 2>/dev/null \
+  | ionice -c3 nice -n 19 xargs -0 -r cat > /dev/null 2>&1
+exit 0

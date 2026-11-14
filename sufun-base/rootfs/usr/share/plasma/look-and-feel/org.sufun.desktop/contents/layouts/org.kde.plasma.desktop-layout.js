@@ -62,11 +62,13 @@ panel.addWidget("org.kde.plasma.panelspacer");
 // (closest thing to Windows 11's quick settings).
 var tray = panel.addWidget("org.kde.plasma.systemtray");
 tray.globalShortcut = "Meta+A";
-// Always visible: 한/영 (Fcitx), network, volume, battery. Behind "^": the rest.
+// Always visible: 한/영 (Fcitx), network, volume, battery, rotation lock (SUFUN).
+// Behind "^": the rest.
 // (Plasma 6.8 keeps these in the tray widget's own [General] settings.)
 tray.currentConfigGroup = ["General"];
 tray.writeConfig("shownItems", ["Fcitx", "org.kde.plasma.networkmanagement",
-                                "org.kde.plasma.volume", "org.kde.plasma.battery"]);
+                                "org.kde.plasma.volume", "org.kde.plasma.battery",
+                                "org.sufun.rotationlock"]);
 tray.writeConfig("hiddenItems", ["org.kde.plasma.bluetooth", "org.kde.plasma.notifications",
                                  "org.kde.plasma.clipboard", "org.kde.plasma.brightness",
                                  "org.kde.plasma.manage-inputmethod"]);

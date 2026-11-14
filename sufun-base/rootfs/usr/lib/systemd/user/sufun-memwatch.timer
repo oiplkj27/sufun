@@ -1,0 +1,12 @@
+# Every 3 minutes while you are logged in. Off: systemctl --user disable --now sufun-memwatch.timer
+[Unit]
+Description=SUFUN memory leak cleanup (every 3 minutes)
+PartOf=graphical-session.target
+
+[Timer]
+OnActiveSec=5min
+OnUnitActiveSec=3min
+AccuracySec=30s
+
+[Install]
+WantedBy=graphical-session.target

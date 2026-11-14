@@ -1,0 +1,19 @@
+{
+    "KPlugin": {
+        "Authors": [ { "Name": "SUFUN" } ],
+        "Category": "System Information",
+        "EnabledByDefault": true,
+        "Description": "Lock or unlock automatic screen rotation (tablet mode)",
+        "Description[ko]": "태블릿 모드의 자동 화면 회전을 잠그거나 풉니다",
+        "Icon": "rotation-allowed",
+        "Id": "org.sufun.rotationlock",
+        "License": "GPL-3.0-or-later",
+        "Name": "Rotation lock",
+        "Name[ko]": "화면 회전 잠금",
+        "Version": "1.0"
+    },
+    "KPackageStructure": "Plasma/Applet",
+    "X-Plasma-API-Minimum-Version": "6.0",
+    "X-Plasma-NotificationArea": "true",
+    "X-Plasma-NotificationAreaCategory": "Hardware"
+}

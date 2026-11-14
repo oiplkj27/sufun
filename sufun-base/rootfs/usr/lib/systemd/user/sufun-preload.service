@@ -1,0 +1,14 @@
+# See /usr/lib/sufun/preload (only does something when SUFUN runs from a microSD card)
+[Unit]
+Description=SUFUN: read start menu and search into memory (microSD only)
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/sufun/preload
+IOSchedulingClass=idle
+Nice=19
+
+[Install]
+WantedBy=graphical-session.target

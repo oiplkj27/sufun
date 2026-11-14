@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# The SUFUN first-start window, started by KWin from /usr/lib/sufun/welcome-session
+# (user "sufun-oobe"). Saves the window's "SUFUN-CHOICE ..." line to
+# $RUNTIME_DIRECTORY/choice for /usr/lib/sufun/welcome-apply.
+set -u
+RUN=${RUNTIME_DIRECTORY:-/run/sufun-welcome}
+QML=
+for q in qml6 /usr/lib/qt6/bin/qml qml; do
+  command -v "$q" >/dev/null 2>&1 && { QML=$(command -v "$q"); break; }
+done
+[[ -n $QML ]] || { echo "sufun-welcome: no Qt QML runtime found" >&2; exit 1; }
+export QML_XHR_ALLOW_FILE_READ=1 QT_MESSAGE_PATTERN='%{message}' QT_QPA_PLATFORM=wayland
+# Windows 11-like controls when this Qt has them, else Qt's plain style
+if compgen -G '/usr/lib/qt6/qml/QtQuick/Controls/FluentWinUI3/*' >/dev/null; then
+  export QT_QUICK_CONTROLS_STYLE=FluentWinUI3
+else
+  export QT_QUICK_CONTROLS_STYLE=Basic
+fi
+args=()
+# CI test only (kernel option sufun.test=..., QEMU virtual machine): accept the
+# defaults of sufun.welcome=<locale> (default Korean) after 15 seconds.
+if grep -qw 'sufun\.test=[a-z]*' /proc/cmdline 2>/dev/null \
+   && [[ $(cat /sys/class/dmi/id/sys_vendor 2>/dev/null) == QEMU ]]; then
+  a=$(sed -n 's/.*sufun\.welcome=\([A-Za-z_.0-9-]*\).*/\1/p' /proc/cmdline)
+  args=(-- "auto=${a:-ko_KR.UTF-8}")
+fi
+"$QML" /usr/share/sufun/welcome/Main.qml "${args[@]}" 2>&1 \
+  | while IFS= read -r line; do
+      case $line in
+        SUFUN-CHOICE\ *) printf '%s\n' "${line#SUFUN-CHOICE }" > "$RUN/choice.tmp" && mv "$RUN/choice.tmp" "$RUN/choice" ;;
+        *) printf 'sufun-welcome-ui: %s\n' "$line" >&2 ;;
+      esac
+    done

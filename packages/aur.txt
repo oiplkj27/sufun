@@ -21,3 +21,4 @@ libreoffice-extension-h2orestart  # opens HWP/HWPX files in LibreOffice
 # Our own PKGBUILDs (pinned versions, only the parts we use):
 sufun-fluent-theme                # Fluent color scheme + solid Plasma style (no Kvantum/Aurorae)
 sufun-fluent-icons                # Fluent icons, standard color only
+sufun-ublock-origin               # uBlock Origin: official signed .xpi from addons.mozilla.org (Firefox policy)

@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+# sufun-memwatch: cleans up desktop helper programs that slowly grow ("memory
+# leaks") and tells you when the KERNEL's memory keeps growing.
+# Runs every 3 minutes (sufun-memwatch.timer, user service); one run reads a few
+# /proc files and exits (no program stays in memory).
+#
+# 1. Desktop helpers (plasmashell, kded6, ksystemstats, the portals, Baloo,
+#    KRunner, Fcitx5, the on-screen keyboard): the size of each is noted 10 minutes
+#    after it started ("baseline", in the journal). When one becomes more than 2x
+#    its baseline AND bigger than a fixed floor, it is restarted safely - but only
+#    when you are away (no input for 3 minutes; never while a video, a call, screen
+#    sharing or anything else keeps the screen awake, never in Do Not Disturb).
+#    The same program is restarted at most 3 times per boot; after that only the
+#    journal says so. Hysteresis: it counts as "too big" again only after it went
+#    back below 1.5x its baseline.
+#    NEVER touched: KWin (restarting it on Wayland ends the whole session), Firefox
+#    (memory pressure is handled by Firefox's own tab unloading and sufun-memguard)
+#    and any app with your data.
+# 2. Kernel memory that can't be freed (/run/sufun/kernel-leak, written by the
+#    root part sufun-kmemwatch): one notification suggesting a restart. At most
+#    once per boot; after you close it, not again for 3 days; "다시 보지 않기" = never.
+# Notifications: one at a time (each replaces the previous one, not kept in the
+# history), restart notices grouped, at most one per hour, nothing in Do Not
+# Disturb / video / call / screen sharing.
+#
+# Off: tap "자동 정리 끄기" in its notification, or put "enabled=false" into
+# ~/.config/sufun/memwatch.conf, or: systemctl --user disable --now sufun-memwatch.timer
+set -u
+CONF="${XDG_CONFIG_HOME:-$HOME/.config}/sufun/memwatch.conf"
+PERSIST="${XDG_STATE_HOME:-$HOME/.local/state}/sufun-memwatch"     # survives reboots
+RUN="${XDG_RUNTIME_DIR:-/run/user/$UID}/sufun-memwatch"           # this boot/session
+KFLAG=/run/sufun/kernel-leak
+IDLE_SECONDS=180
+
+# Test mode (CI only: kernel option sufun.test=..., QEMU VM, SUFUN_MEMWATCH_TEST=1):
+# fake clock, fake sizes, fake idle state and an extra test program to watch.
+TEST=0
+if [[ ${SUFUN_MEMWATCH_TEST:-0} == 1 ]] && grep -qw 'sufun\.test=[a-z]*' /proc/cmdline \
+   && [[ $(cat /sys/class/dmi/id/sys_vendor 2>/dev/null) == QEMU ]]; then
+  TEST=1
+  RUN=${SUFUN_MEMWATCH_RUN:-$RUN-test}; PERSIST=${SUFUN_MEMWATCH_PERSIST:-$PERSIST-test}
+  KFLAG=${SUFUN_MEMWATCH_KFLAG:-$KFLAG}
+fi
+NOW=$(date +%s); (( TEST )) && [[ -n ${SUFUN_MEMWATCH_NOW:-} ]] && NOW=$SUFUN_MEMWATCH_NOW
+mkdir -p "$RUN" "$PERSIST"
+log() { echo "sufun-memwatch: $*"; }
+
+grep -qsx 'enabled=false' "$CONF" && exit 0
+
+# --- what is watched: name | how to restart | floor in MB ------------------------
+#   unit:<name>   systemctl --user restart <name>
+#   im            the keyboard input method (KWin starts it again)
+WATCH='plasmashell|unit:plasma-plasmashell.service|700
+kded6|unit:plasma-kded6.service|200
+ksystemstats|unit:plasma-ksystemstats.service|150
+xdg-desktop-portal|unit:xdg-desktop-portal.service|150
+xdg-desktop-por|unit:plasma-xdg-desktop-portal-kde.service|200
+baloo_file|unit:kde-baloo.service|300
+krunner|unit:plasma-krunner.service|300
+fcitx5|im|200
+plasma-keyboard|im|250'
+(( TEST )) && [[ -n ${SUFUN_MEMWATCH_EXTRA:-} ]] && WATCH+=$'\n'"$SUFUN_MEMWATCH_EXTRA"
+NEVER='^(kwin_wayland|kwin_x11|kwin|Xwayland|firefox|firefox-bin|Isolated Web Co|Web Content|ksmserver|startplasma-wayland|sddm|systemd)$'
+
+# --- helpers --------------------------------------------------------------------
+pss_kb() {  # pss_kb <pid> (test mode: from $SUFUN_MEMWATCH_FAKE/<name> if present)
+  local v
+  if (( TEST )) && [[ -n ${SUFUN_MEMWATCH_FAKE:-} && -f $SUFUN_MEMWATCH_FAKE/$2 ]]; then
+    cat "$SUFUN_MEMWATCH_FAKE/$2"; return
+  fi
+  v=$(awk '/^Pss:/ {print $2; exit}' "/proc/$1/smaps_rollup" 2>/dev/null)
+  echo "${v:-0}"
+}
+age_s() {  # seconds since the process started
+  local start ticks up
+  (( TEST )) && [[ -n ${SUFUN_MEMWATCH_AGE:-} ]] && { echo "$SUFUN_MEMWATCH_AGE"; return; }
+  start=$(awk '{print $22}' "/proc/$1/stat" 2>/dev/null) || { echo 0; return; }
+  ticks=$(getconf CLK_TCK); up=$(cut -d. -f1 /proc/uptime)
+  echo $(( up - start / ticks ))
+}
+busy_reason() {  # prints why now is NOT a good moment; empty = fine
+  if (( TEST )); then
+    [[ -e ${SUFUN_MEMWATCH_IDLE:-/nonexistent} ]] || echo "not idle"
+    [[ -e ${SUFUN_MEMWATCH_DND:-/nonexistent} ]] && echo "do not disturb"
+    return
+  fi
+  local f="$RUN/idle"
+  [[ -e $f ]] || { echo "not idle (input in the last ${IDLE_SECONDS}s, or a video/call keeps the screen awake)"; return; }
+  busctl --user get-property org.freedesktop.Notifications /org/freedesktop/Notifications \
+    org.freedesktop.Notifications Inhibited 2>/dev/null | grep -q true && { echo "do not disturb"; return; }
+  busctl --user call org.freedesktop.PowerManagement /org/freedesktop/PowerManagement/Inhibit \
+    org.freedesktop.PowerManagement.Inhibit HasInhibit 2>/dev/null | grep -q true && { echo "an app keeps the screen awake (video, call, presentation)"; return; }
+  # A call or screen sharing: something records sound or video right now
+  [[ -n $(pactl list short source-outputs 2>/dev/null) ]] && { echo "microphone in use"; return; }
+  pw-cli ls Node 2>/dev/null | grep -q 'Stream/Input/Video' && { echo "camera or screen sharing in use"; return; }
+}
+notify() {  # notify <state key> <title> <body> [action args...] ; replaces our previous notification
+  local id old; old=$(cat "$RUN/notify-id" 2>/dev/null || echo 0)
+  id=$(notify-send -a "SUFUN" -i sufun-logo -p -r "$old" -h boolean:transient:true \
+       -h string:desktop-entry:org.kde.plasma-systemmonitor "${@:4}" "$2" "$3" 2>/dev/null | head -n1)
+  [[ $id =~ ^[0-9]+$ ]] && echo "$id" > "$RUN/notify-id"
+  log "notification: $2 - $3"
+  (( TEST )) && echo "$NOW $1" >> "$RUN/notices.log"
+  return 0
+}
+
+# --- 1. desktop helpers ------------------------------------------------------------
+restarted=()
+while IFS='|' read -r name how floor_mb; do
+  [[ -n $name ]] || continue
+  if [[ $name =~ $NEVER ]]; then log "refusing to watch $name (never touched)"; continue; fi
+  pid=$(pgrep -o -u "$UID" -x "$name" 2>/dev/null) || continue
+  st="$RUN/$name.state"
+  # state: pid baseline_kb over(0/1) restarts warned_limit(0/1)
+  read -r spid base over restarts warned < "$st" 2>/dev/null || { spid=0 base=0 over=0 restarts=0 warned=0; }
+  restarts=$(cat "$RUN/$name.restarts" 2>/dev/null || echo 0)
+  if [[ $spid != "$pid" ]]; then base=0 over=0; fi
+  age=$(age_s "$pid")
+  if (( age < 600 )); then echo "$pid 0 0 $restarts $warned" > "$st"; continue; fi
+  pss=$(pss_kb "$pid" "$name")
+  if (( base == 0 )); then
+    base=$pss; log "baseline $name (pid $pid): $((base / 1024)) MB"
+  fi
+  trigger=$(( 2 * base )); (( trigger < floor_mb * 1024 )) && trigger=$(( floor_mb * 1024 ))
+  reset=$(( base * 3 / 2 ))
+  if (( over == 0 && pss > trigger )); then
+    over=1; log "$name grew to $((pss / 1024)) MB (baseline $((base / 1024)) MB, limit $((trigger / 1024)) MB)"
+  elif (( over == 1 && pss < reset )); then
+    over=0; log "$name is back to $((pss / 1024)) MB"
+  fi
+  if (( over == 1 )); then
+    if (( restarts >= 3 )); then
+      (( warned )) || log "$name: already restarted 3 times this boot, not again (only logging)"
+      warned=1
+    else
+      why=$(busy_reason)
+      if [[ -n $why ]]; then
+        log "$name needs a restart, waiting: $why"
+      else
+        log "restarting $name (pid $pid, $((pss / 1024)) MB, baseline $((base / 1024)) MB)"
+        case $how in
+          unit:*) systemctl --user restart "${how#unit:}" ;;
+          im)     m=$(kreadconfig6 --file kwinrc --group Wayland --key InputMethod)
+                  kwriteconfig6 --file kwinrc --group Wayland --key InputMethod --notify ""
+                  sleep 1
+                  kwriteconfig6 --file kwinrc --group Wayland --key InputMethod --notify "$m" ;;
+        esac
+        restarts=$((restarts + 1)); echo "$restarts" > "$RUN/$name.restarts"
+        restarted+=("$name"); over=0; pid=0; base=0
+        echo "$name" >> "$RUN/pending-notice"
+      fi
+    fi
+  fi
+  echo "$pid $base $over $restarts $warned" > "$st"
+done <<< "$WATCH"
+
+# Grouped restart notice: at most one per hour, not when busy
+if [[ -s $RUN/pending-notice ]]; then
+  last=$(cat "$RUN/last-restart-notice" 2>/dev/null || echo 0)
+  if (( NOW - last >= 3600 )) && [[ -z $(busy_reason | grep -v '^not idle') ]]; then
+    names=$(sort -u "$RUN/pending-notice" | paste -sd, - | sed 's/,/, /g')
+    rm -f "$RUN/pending-notice"; echo "$NOW" > "$RUN/last-restart-notice"
+    notify restart "메모리 정리" "메모리를 많이 쓰던 ${names}를 다시 시작했습니다."
+  fi
+fi
+
+# --- 2. kernel memory (flag from sufun-kmemwatch) ----------------------------------
+if [[ -s $KFLAG && ! -e $RUN/kernel-notice-shown && ! -e $PERSIST/kernel-notice-never ]]; then
+  until=$(cat "$PERSIST/kernel-notice-dismissed-until" 2>/dev/null || echo 0)
+  if (( NOW >= until )) && [[ -z $(busy_reason | grep -v '^not idle') ]]; then
+    touch "$RUN/kernel-notice-shown"                       # once per boot
+    # Wait for the answer in the background: closed -> quiet for 3 days,
+    # "다시 보지 않기" -> never again.
+    if (( TEST )); then   # CI: the notice counts as closed right away
+      echo $(( NOW + 3 * 86400 )) > "$PERSIST/kernel-notice-dismissed-until"
+    else
+    (
+      a=$(notify-send -a SUFUN -i sufun-logo -w -A never="다시 보지 않기" \
+            "시스템 메모리" "시스템 메모리가 조금씩 새고 있어요. 다시 시작하면 정리됩니다." 2>/dev/null)
+      if [[ $a == never ]]; then touch "$PERSIST/kernel-notice-never"
+      else echo $(( $(date +%s) + 3 * 86400 )) > "$PERSIST/kernel-notice-dismissed-until"; fi
+    ) >/dev/null 2>&1 &
+    disown
+    fi
+    log "notification: kernel memory keeps growing ($(head -n1 "$KFLAG")), suggested a restart"
+    (( TEST )) && echo "$NOW kernel" >> "$RUN/notices.log"
+  fi
+fi
+exit 0

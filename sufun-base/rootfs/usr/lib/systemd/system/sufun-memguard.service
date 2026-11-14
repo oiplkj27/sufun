@@ -1,0 +1,22 @@
+# See /usr/lib/sufun/memguard: closes the biggest Firefox tab process when the
+# whole system starts to stall on memory (pressure), before the desktop freezes.
+[Unit]
+Description=SUFUN memory stall guard (memory pressure)
+
+[Service]
+ExecStart=/usr/lib/sufun/memguard
+Restart=always
+RestartSec=5
+# Must keep running when memory is short: never killed itself, high priority
+OOMScoreAdjust=-1000
+Nice=-5
+MemoryMin=8M
+# Needs no special rights except signalling processes and reading /proc
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_KILL CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+
+[Install]
+WantedBy=multi-user.target

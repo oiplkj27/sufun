@@ -30,3 +30,23 @@ autoload=false
 # Updates Baloo search folders - the Baloo file indexer is switched off (baloofilerc)
 [Module-baloosearchmodule]
 autoload=false
+
+# Reminds you to install the "Plasma browser integration" add-on - not used
+[Module-browserintegrationreminder]
+autoload=false
+
+# Takes the accent color from the wallpaper - SUFUN uses a fixed Fluent color
+[Module-plasma_accentcolor_service]
+autoload=false
+
+# Keyboard backlight color (RGB keyboards) - the Type Cover has none
+[Module-kameleon]
+autoload=false
+
+# Notifications about remote:/ folders - not used
+[Module-remotenotifier]
+autoload=false
+
+# Updates the location for Night Light "automatic" mode - Night Light uses fixed times here
+[Module-colorcorrectlocationupdater]
+autoload=false

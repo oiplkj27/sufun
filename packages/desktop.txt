@@ -62,6 +62,8 @@ spectacle                # screenshots (Print Screen / Meta+Shift+S)
 firefox                  # also opens PDFs, so okular (122 MB) is not needed
 htop                     # task manager in the terminal (CPU and RAM per program)
 plasma-systemmonitor     # "작업 관리자" / Task Manager (Ctrl+Shift+Esc). +3 MB disk, RAM only while open
+libnl                    # System Monitor: network sensors (ksystemstats optional dependency)
+networkmanager-qt        # System Monitor: network sensors (ksystemstats optional dependency)
 partitionmanager         # format USB drives (FAT32, exFAT, NTFS)
 timeshift                # system snapshots (backups) before updates
 
@@ -119,6 +121,8 @@ ufw                      # firewall: block incoming, allow outgoing
 zram-generator           # compressed swap in RAM, never on the eMMC
 earlyoom                 # closes the app eating memory before the desktop freezes
 systembus-notify         # shows a notification when earlyoom closes something
+libnotify                # notify-send: SUFUN's memory cleanup notices (sufun-memwatch)
+swayidle                 # tells sufun-memwatch when you are away (Wayland idle notification, ~1 MB)
 ananicy-cpp              # gives desktop/foreground-type apps CPU priority (rules: our package)
 tesseract-data-eng       # text recognition data needed by kio-extras' search tool; English only (else pacman picks Afrikaans)
 pacman-contrib           # paccache: cleans old packages automatically

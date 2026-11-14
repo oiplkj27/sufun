@@ -93,7 +93,7 @@ Surface에는 Windows 11 Home 정품 키가 **펌웨어에 들어 있습니다.*
 1. Linux에서 만든 **Windows Setup** 부팅 항목을 추가합니다 (이때는 지금 있는 Windows를 켜도록).
 2. 컴퓨터를 끄고 **볼륨 위(+) + 전원** → **Boot configuration** 에 **Windows Setup** 이 보이는지
    확인하고, 왼쪽으로 밀어 부팅합니다. **Windows가 켜지면 성공**입니다.
-3. 다시 SUFUN 라이브를 켜고(장치 사용 → SUFUN (SD)) 설치 프로그램을 실행하면, 결과를 묻고 테스트 항목을 지웁니다.
+3. 다시 SUFUN 라이브를 켜고(Surface UEFI → Boot configuration → SUFUN (SD) 밀기) 설치 프로그램을 실행하면, 결과를 묻고 테스트 항목을 지웁니다.
 
 이 테스트로 "이 Surface의 펌웨어가 Linux에서 만든 부팅 항목을 보여 주고 켠다"는 것을 Windows를 지우기 전에 확인합니다.
 Windows는 절대 자동으로 지우지 않습니다 (`ERASE` 를 직접 입력해야 함).

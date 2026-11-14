@@ -23,7 +23,7 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Tag must match VERSION, release notes must exist
         run: |
           v=$(tr -d '[:space:]' < VERSION)
@@ -42,11 +42,11 @@ jobs:
     permissions:
       contents: write              # to create the GitHub Release
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with: { name: sufun-iso, path: iso }
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with: { name: sufun-packages, path: pkgtar }
       - name: Unpack packages
         run: mkdir -p packages && tar -xf pkgtar/sufun-packages.tar -C packages

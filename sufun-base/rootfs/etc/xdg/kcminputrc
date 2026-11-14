@@ -1,0 +1,12 @@
+# Touchpad defaults for every user, the live user AND the login screen (SDDM's KWin
+# reads /etc/xdg too), like Windows. KWin uses [Libinput][Defaults][Touchpad] for
+# every touchpad unless the user changed that touchpad in System Settings.
+#   TapToClick     tap = left click
+#   ClickMethod=2  "click finger": two-finger tap/click = right click (libinput CLICKFINGER)
+#   NaturalScroll  two fingers up = the content moves up (the page scrolls down), like Windows
+# Mice are not affected: the wheel direction stays as it is.
+[Libinput][Defaults][Touchpad]
+TapToClick=true
+ClickMethod=2
+NaturalScroll=true
+DisableWhileTyping=true

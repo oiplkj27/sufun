@@ -88,9 +88,28 @@ if [[ -f $PRESETS/linux.preset ]]; then
 fi
 [[ -f $PROFILE/airootfs/etc/mkinitcpio.conf.d/archiso.conf ]] \
   || die "releng profile has no mkinitcpio.conf.d/archiso.conf: archiso changed, check build.sh"
-# Note: the live USB keeps archiso's own initramfs hooks (archiso.conf), without
-# the Plymouth boot screen: Plymouth is not reliable with archiso's hooks.
-# The installed system gets the SUFUN boot screen (sufun-base, 10-sufun.conf).
+# The live system keeps archiso's own initramfs hooks (archiso.conf); our
+# airootfs/etc/mkinitcpio.conf.d/zz-sufun-sd.conf adds the SD card drivers and
+# "plymouth" after "kms" (SUFUN boot screen; the theme is set by sufun-base).
+
+log "Boot menu: SUFUN boot screen by default, plus a text mode entry"
+# Every normal live entry gets "quiet splash" (Plymouth logo, Esc shows the text);
+# a copy without it is the "text mode" entry for troubleshooting. (The microSD
+# boot stage made on Windows gets the same two entries from sufun-sd-setup.ps1.)
+n=0
+for e in "$PROFILE"/efiboot/loader/entries/*.conf; do
+  [[ -f $e ]] || continue
+  grep -q '^options.*archisobasedir' "$e" || continue
+  grep -qiE 'speech|accessib' "$e" && continue        # screen reader entry: keep text
+  t="$PROFILE/efiboot/loader/entries/zz-sufun-text-$(basename "$e")"
+  sed -e '/^title/s/$/ (text mode)/' -e '/^sort-key/s/$/9/' "$e" > "$t"
+  # live writes (home, logs) go to RAM ("cowspace"); 512 MiB instead of 256 MiB
+  # usbcore.quirks=045e:09b5:g: Type Cover touchpad starts reliably (delayed init)
+  sed -i '/^options/s/$/ cow_spacesize=512M usbcore.quirks=045e:09b5:g/' "$e" "$t"
+  sed -i '/^options/s/$/ quiet splash loglevel=3/' "$e"
+  n=$((n + 1))
+done
+(( n > 0 )) || die "no archiso boot entries found in efiboot/loader/entries (archiso changed?)"
 
 log "Configuring services"
 SD="$PROFILE/airootfs/etc/systemd/system"
@@ -124,8 +143,13 @@ iso_label="SUFUN_\$(date --date="@\${SOURCE_DATE_EPOCH:-\$(date +%s)}" +%Y%m)"
 iso_publisher="SUFUN (for the Microsoft Surface Go 3)"
 iso_application="SUFUN Live/Installer"
 install_dir="arch"
+# zstd with 256 KiB blocks instead of xz with 1 MiB blocks: a little bigger, but
+# every small file read (start menu, search, power menu) decompresses ~10x less
+# data, much faster on the Pentium 6500Y and a slow microSD card (~23 MB/s).
+airootfs_image_tool_options=('-comp' 'zstd' '-Xcompression-level' '15' '-b' '256K')
 file_permissions+=(
   ["/usr/local/bin/sufun-install"]="0:0:755"
+  ["/usr/local/bin/sufun-install-gui"]="0:0:755"
   ["/usr/local/bin/sufun-selftest"]="0:0:755"
   ["/etc/sudoers.d/10-sufun-live"]="0:0:440"
 )
@@ -150,6 +174,18 @@ for m in rtsx_pci rtsx_pci_sdmmc mmc_block mmc_core sdhci sdhci_pci vfat exfat n
     || grep -qE "/${m//_/[-_]}\.ko$" <<< "$BUILTIN" \
     || die "module $m is missing from the live initramfs (microSD boot would fail)"
 done
+# SUFUN boot screen in the live initramfs (zz-sufun-sd.conf + sufun-base's theme)
+grep -q 'plymouth/themes/sufun/logo.png' <<< "$INITRD_FILES"   || die "the live initramfs has no SUFUN Plymouth theme (boot splash)"
+# Languages offered by the first-start chooser must be generated (locale-archive)
+ARCHIVE="$WORK/build/x86_64/airootfs/usr/lib/locale/locale-archive"
+for l in $(awk -F'	' '!/^#/ && NF {print $1}' "$HERE/sufun-base/rootfs/usr/share/sufun/languages.tsv"); do
+  l=${l%.UTF-8}
+  grep -aq "${l}.utf8" "$ARCHIVE" || die "locale ${l}.UTF-8 was not generated in the live system"
+done
+# The live root image must fit a FAT32 card partition (one file < 4 GiB)
+SFS="$ISODIR/arch/x86_64/airootfs.sfs"
+(( $(stat -c %s "$SFS") < 4294967296 )) || die "airootfs.sfs is 4 GiB or larger (FAT32 limit)"
+log "airootfs.sfs: $(du -h "$SFS" | cut -f1)"
 # The Windows setup script copies EFI/BOOT/BOOTx64.EFI as the boot menu and
 # writes systemd-boot entries for it: it must be systemd-boot.
 grep -aq 'systemd-boot' "$ISODIR/EFI/BOOT/BOOTx64.EFI" \

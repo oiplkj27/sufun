@@ -1,0 +1,26 @@
+# The chooser window of sufun-welcome.service: a small KWin with one full-screen
+# window, in its own graphical session on tty7, as user "sufun-oobe".
+[Unit]
+Description=SUFUN first start window
+After=systemd-user-sessions.service systemd-logind.service
+Wants=dbus.socket
+
+[Service]
+Type=oneshot
+User=sufun-oobe
+PAMName=sufun-welcome
+TTYPath=/dev/tty7
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+StandardInput=tty-fail
+StandardOutput=journal
+StandardError=journal
+UtmpIdentifier=tty7
+UtmpMode=user
+Environment=XDG_SESSION_TYPE=wayland XDG_SESSION_CLASS=greeter XDG_SEAT=seat0 XDG_VTNR=7
+StateDirectory=sufun-oobe
+RuntimeDirectory=sufun-welcome
+RuntimeDirectoryPreserve=yes
+ExecStart=/usr/lib/sufun/welcome-session
+TimeoutStartSec=20min

@@ -54,9 +54,11 @@ grep -q 'archisodevice=/dev/disk/by-uuid/' live-entry.conf || die "live entry ha
 mmd -i "$M" ::/EFI/BOOT 2>/dev/null || true
 mcopy -o -i "$M" "::/EFI/SUFUN/systemd-bootx64.efi" bootx64.efi && mcopy -o -i "$M" bootx64.efi ::/EFI/BOOT/BOOTX64.EFI
 
-set_entry_test() {  # set_entry_test <mode>: add serial console + sufun.test=<mode> to the live entry
-  sed -e 's/ console=ttyS0[^ ]*//g; s/ console=tty0//g; s/ sufun\.test=[a-z]*//g' \
-      -e "/^options/s/\$/ console=ttyS0,115200 console=tty0 sufun.test=$1/" live-entry.conf > e.conf
+set_entry_test() {  # set_entry_test <mode> [extra options]: serial console + sufun.test=<mode> in the live entry
+  # plymouth.ignore-serial-consoles: the SUFUN boot splash is still drawn on the
+  # screen (for the screenshots) although a serial console is attached.
+  sed -e 's/ console=ttyS0[^ ]*//g; s/ console=tty0//g; s/ sufun\.test=[a-z]*//g; s/ sufun\.welcome=[^ ]*//g' \
+      -e "/^options/s/\$/ console=ttyS0,115200 console=tty0 plymouth.ignore-serial-consoles sufun.test=$1 ${2:-}/" live-entry.conf > e.conf
   mcopy -o -i "$M" e.conf ::/loader/entries/sufun-live.conf
 }
 
@@ -73,8 +75,10 @@ SD=(-device sdhci-pci,sd-spec-version=3 -drive id=sdimg,if=none,format=raw,file=
 DISK=(-drive file=internal.img,if=virtio,format=raw)
 
 fail=0
-set_entry_test live
-run_vm 6-sd-live 1200 'SUFUN-TEST: LIVE-DESKTOP-OK' 'SUFUN-TEST: LIVE-DESKTOP-TIMEOUT' "${DISK[@]}" "${SD[@]}" || fail=1
+# The first-start chooser picks English (US) here: the "abroad" path (English
+# desktop, America/New_York, US keyboard); the other tests use Korean.
+set_entry_test live sufun.welcome=en_US.UTF-8
+FAST_SHOTS=40 run_vm 6-sd-live 2400 'SUFUN-TEST: LIVE-DESKTOP-OK' 'SUFUN-TEST: LIVE-DESKTOP-TIMEOUT' "${DISK[@]}" "${SD[@]}" || fail=1
 grep -q 'SUFUN-TEST: PASS live-from-sd' 6-sd-live-serial.log || { echo "the live system did not run from the SD card"; fail=1; }
 check_serial 6-sd-live || fail=1
 

@@ -32,7 +32,7 @@ package() {
   # Files come from Windows/git without reliable permissions: set them here.
   find . -type d -exec chmod 755 {} +
   find . -type f -exec chmod 644 {} +
-  chmod 755 usr/bin/* usr/lib/sufun/* usr/lib/initcpio/post/*
+  chmod 755 usr/bin/* usr/lib/sufun/* usr/lib/initcpio/post/* usr/lib/systemd/system-sleep/*
 
   # Version information (Settings > About this System, fastfetch, ...)
   local build_id; build_id=$(date -u --date="@${SOURCE_DATE_EPOCH:-$(date +%s)}" +%Y-%m-%d)
@@ -118,4 +118,24 @@ package() {
   # Plasma session (same as "systemctl --global enable").
   install -d etc/systemd/user/graphical-session.target.wants
   ln -s /usr/lib/systemd/user/sufun-input-switch.service     etc/systemd/user/graphical-session.target.wants/sufun-input-switch.service
+  # Memory leak cleanup for every user (sufun-memwatch) + its idle marker
+  ln -s /usr/lib/systemd/user/sufun-memwatch.timer           etc/systemd/user/graphical-session.target.wants/sufun-memwatch.timer
+  ln -s /usr/lib/systemd/user/sufun-idle.service             etc/systemd/user/graphical-session.target.wants/sufun-idle.service
+  # Type Cover touchpad re-probe at login (see /usr/lib/sufun/typecover)
+  ln -s /usr/lib/systemd/user/sufun-typecover-login.service  etc/systemd/user/graphical-session.target.wants/sufun-typecover-login.service
+  # microSD only: start menu / search / power menu files read into memory after login
+  ln -s /usr/lib/systemd/user/sufun-preload.service          etc/systemd/user/graphical-session.target.wants/sufun-preload.service
+
+  # System services, enabled like "systemctl enable" (live system and installs):
+  #   sufun-memguard     memory-stall guard (memory pressure)
+  #   sufun-kmemwatch    kernel memory leak check (timer)
+  #   sufun-typecover    Type Cover touchpad recovery at boot (also after resume)
+  install -d etc/systemd/system/multi-user.target.wants etc/systemd/system/timers.target.wants
+  ln -s /usr/lib/systemd/system/sufun-memguard.service       etc/systemd/system/multi-user.target.wants/sufun-memguard.service
+  ln -s /usr/lib/systemd/system/sufun-typecover.service      etc/systemd/system/multi-user.target.wants/sufun-typecover.service
+  ln -s /usr/lib/systemd/system/sufun-kmemwatch.timer        etc/systemd/system/timers.target.wants/sufun-kmemwatch.timer
+  # First-start chooser (language, time zone, keyboard): started with the login
+  # screen, which waits for it (only while /var/lib/sufun/welcome-done is missing)
+  install -d usr/lib/systemd/system/sddm.service.wants
+  ln -s ../sufun-welcome.service usr/lib/systemd/system/sddm.service.wants/sufun-welcome.service
 }

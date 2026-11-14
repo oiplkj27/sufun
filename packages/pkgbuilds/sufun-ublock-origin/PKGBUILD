@@ -1,0 +1,33 @@
+# uBlock Origin for SUFUN's Firefox: the official, Mozilla-signed .xpi from
+# addons.mozilla.org, unchanged. Firefox installs it for every user through the
+# enterprise policy in /etc/firefox/policies/policies.json ("normal_installed":
+# on by default, the user can switch it off), also offline in the live system.
+# After that Firefox keeps it up to date from addons.mozilla.org by itself, so
+# this pinned copy only matters for the first start of a new profile.
+# Update: take version, file URL and sha256 from
+#   https://addons.mozilla.org/api/v5/addons/addon/ublock-origin/  (current_version.file)
+# Not the Arch package "firefox-ublock-origin": that one puts it into Firefox's
+# own folder as a system add-on, which is not updated from addons.mozilla.org.
+pkgname=sufun-ublock-origin
+pkgver=1.76.2
+pkgrel=1
+_fileid=5250345
+pkgdesc="uBlock Origin (Mozilla-signed .xpi from addons.mozilla.org) for SUFUN's Firefox policy"
+arch=(any)
+url="https://github.com/gorhill/uBlock"
+license=(GPL-3.0-only)
+makedepends=(libarchive)
+source=("ublock_origin-$pkgver.xpi::https://addons.mozilla.org/firefox/downloads/file/$_fileid/ublock_origin-$pkgver.xpi")
+noextract=("ublock_origin-$pkgver.xpi")
+sha256sums=('36320e4735818f4f9b5ac1506610590233f4b201ca50196c2834e30f3e808a1e')
+
+package() {
+  install -Dm644 "ublock_origin-$pkgver.xpi" "$pkgdir/usr/share/sufun/firefox/uBlock0@raymondhill.net.xpi"
+  # License and where the source code is (GPL-3.0)
+  local lic="$pkgdir/usr/share/licenses/$pkgname"
+  install -d "$lic"
+  bsdtar -xOf "ublock_origin-$pkgver.xpi" LICENSE.txt > "$lic/LICENSE.txt" 2>/dev/null || rm -f "$lic/LICENSE.txt"
+  [[ -s $lic/LICENSE.txt ]] || ln -s /usr/share/licenses/spdx/GPL-3.0-only.txt "$lic/LICENSE.txt"
+  printf 'uBlock Origin %s by Raymond Hill and contributors, GPL-3.0.\nSource code: %s\nThis file: %s\n' \
+    "$pkgver" "$url" "${source[0]#*::}" > "$lic/SOURCE.txt"
+}

@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# sufun-kmemwatch (root, every 10 minutes): watches kernel memory that can never be
+# freed by the kernel itself ("SUnreclaim" = unreclaimable slab, plus per-CPU
+# memory, from /proc/meminfo). Baseline = 10 minutes after boot. When it stays far
+# above that (3x and at least 400 MB more, twice in a row), it
+#   - writes /run/sufun/kernel-leak (sufun-memwatch then suggests a restart in
+#     the desktop, at most once per boot), and
+#   - logs the 10 biggest slab caches (/proc/slabinfo, root only) to the journal.
+# It NEVER restarts anything itself. Back below 2x + 200 MB = flag removed.
+set -u
+MEMINFO=${SUFUN_KMEMWATCH_MEMINFO:-/proc/meminfo}
+DIR=${SUFUN_KMEMWATCH_DIR:-/run/sufun}
+UPTIME=${SUFUN_KMEMWATCH_UPTIME:-$(cut -d. -f1 /proc/uptime)}
+mkdir -p "$DIR"
+log() { echo "sufun-kmemwatch: $*"; }
+kb() { awk -v k="$1:" '$1 == k {print $2; f=1} END {if (!f) print 0}' "$MEMINFO"; }
+cur=$(( $(kb SUnreclaim) + $(kb Percpu) ))
+(( UPTIME < 600 )) && exit 0
+if [[ ! -s $DIR/kmem-baseline ]]; then
+  echo "$cur" > "$DIR/kmem-baseline"; log "baseline: unreclaimable kernel memory $((cur / 1024)) MB"; exit 0
+fi
+base=$(cat "$DIR/kmem-baseline")
+limit=$(( 3 * base )); (( limit < base + 400 * 1024 )) && limit=$(( base + 400 * 1024 ))
+back=$(( 2 * base + 200 * 1024 ))
+if (( cur > limit )); then
+  n=$(( $(cat "$DIR/kmem-over" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$DIR/kmem-over"
+  if (( n >= 2 )) && [[ ! -s $DIR/kernel-leak ]]; then
+    echo "$((cur / 1024)) MB (baseline $((base / 1024)) MB)" > "$DIR/kernel-leak"
+    chmod 644 "$DIR/kernel-leak"
+    log "unreclaimable kernel memory $((cur / 1024)) MB, baseline $((base / 1024)) MB: suggesting a restart"
+    if [[ -r /proc/slabinfo ]]; then
+      log "biggest slab caches (name, MB):"
+      awk 'NR > 2 {printf "%s %d\n", $1, $3 * $4 / 1048576}' /proc/slabinfo | sort -k2 -nr | head -n 10 \
+        | while read -r n m; do log "  $n $m"; done
+    fi
+  fi
+elif (( cur < back )); then
+  rm -f "$DIR/kmem-over" "$DIR/kernel-leak"
+fi
+exit 0

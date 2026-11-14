@@ -1,0 +1,15 @@
+# Languages offered by the SUFUN first-start chooser (sufun-welcome) and the installer.
+# All of them are generated (locale-gen) in the live system and on installed systems.
+# Columns (TAB-separated): locale, name shown, default time zone, default keyboard (keyboards.tsv)
+ko_KR.UTF-8	한국어	Asia/Seoul	kr
+en_US.UTF-8	English (US)	America/New_York	us
+en_GB.UTF-8	English (UK)	Europe/London	gb
+de_DE.UTF-8	Deutsch	Europe/Berlin	de
+fr_FR.UTF-8	Français	Europe/Paris	fr
+es_ES.UTF-8	Español	Europe/Madrid	es
+it_IT.UTF-8	Italiano	Europe/Rome	it
+pt_BR.UTF-8	Português (Brasil)	America/Sao_Paulo	br
+ja_JP.UTF-8	日本語	Asia/Tokyo	jp
+zh_CN.UTF-8	中文 (简体)	Asia/Shanghai	us
+zh_TW.UTF-8	中文 (繁體)	Asia/Taipei	us
+vi_VN.UTF-8	Tiếng Việt	Asia/Ho_Chi_Minh	us

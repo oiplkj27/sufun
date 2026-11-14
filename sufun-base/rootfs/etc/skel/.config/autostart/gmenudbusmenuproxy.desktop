@@ -1,0 +1,8 @@
+[Desktop Entry]
+# SUFUN: the global menu helper for GTK apps is not needed (the taskbar has no
+# global menu); not starting it saves RAM. (Plasma reads this file instead of
+# /etc/xdg/autostart/gmenudbusmenuproxy.desktop.)
+Type=Application
+Name=gmenudbusmenuproxy
+Exec=gmenudbusmenuproxy
+Hidden=true

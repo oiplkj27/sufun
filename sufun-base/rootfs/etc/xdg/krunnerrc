@@ -3,3 +3,6 @@
 # Open in the middle of the screen (like Windows search) instead of sliding
 # down from the top edge.
 FreeFloating=true
+# Open empty every time, like Windows search (the default "true" kept the
+# previous query). Search history itself is still kept for suggestions.
+RetainPriorSearch=false

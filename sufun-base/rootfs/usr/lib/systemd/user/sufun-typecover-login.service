@@ -1,0 +1,13 @@
+# At every login: re-probe the Type Cover touchpad (system unit, allowed by
+# /usr/share/polkit-1/rules.d/50-sufun-typecover.rules for the logged-in user).
+[Unit]
+Description=SUFUN: re-probe the Type Cover touchpad at login
+After=graphical-session-pre.target
+PartOf=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl start --no-block sufun-typecover-rebind.service
+
+[Install]
+WantedBy=graphical-session.target

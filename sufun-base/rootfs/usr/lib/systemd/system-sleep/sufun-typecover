@@ -1,0 +1,4 @@
+#!/bin/sh
+# After resume from sleep: re-probe the Type Cover touchpad (see /usr/lib/sufun/typecover)
+[ "$1" = post ] && systemctl start --no-block sufun-typecover-rebind.service
+exit 0

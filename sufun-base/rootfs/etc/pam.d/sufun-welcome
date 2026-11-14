@@ -1,0 +1,9 @@
+#%PAM-1.0
+# SUFUN first-start chooser (sufun-welcome-ui.service): a graphical session for the
+# system user "sufun-oobe" WITHOUT a password and without login rights:
+# systemd opens only "account" + "session" here; "auth" is never allowed.
+auth      required  pam_deny.so
+account   required  pam_unix.so
+password  required  pam_deny.so
+session   required  pam_unix.so
+session   required  pam_systemd.so

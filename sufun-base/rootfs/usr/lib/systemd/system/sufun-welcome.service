@@ -1,0 +1,26 @@
+# SUFUN first start: choose language, time zone and keyboard BEFORE the desktop
+# (live system: every start; installed system: until the choice was made once;
+# the installer copies the live choice, so it is not asked twice).
+# The window runs as the unprivileged user sufun-oobe (sufun-welcome-ui.service);
+# this unit (root) only starts it and then applies the checked result.
+# Started by sddm.service (sddm.service.wants); the login screen / live desktop
+# waits for it, so the session starts directly in the chosen language.
+[Unit]
+Description=SUFUN first start: language, time zone, keyboard
+ConditionPathExists=!/var/lib/sufun/welcome-done
+After=systemd-user-sessions.service systemd-logind.service plymouth-start.service sufun-live-user.service
+Before=display-manager.service sddm.service
+# Same as sddm.service: Plymouth leaves its last picture until KWin draws
+Conflicts=plymouth-quit.service
+After=plymouth-quit.service
+
+[Service]
+Type=oneshot
+ExecStartPre=-/usr/bin/plymouth quit --retain-splash
+# The chooser has its own session on tty7: bring that screen to the front
+ExecStartPre=-/usr/bin/chvt 7
+ExecStart=-/usr/bin/systemctl start sufun-welcome-ui.service
+ExecStart=/usr/lib/sufun/welcome-apply
+# Never block the start for long: after 25 minutes the desktop/login screen comes
+# anyway (with the previous or default settings).
+TimeoutStartSec=25min

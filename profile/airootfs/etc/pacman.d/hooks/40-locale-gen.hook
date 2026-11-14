@@ -1,0 +1,13 @@
+# SUFUN live ISO (replaces archiso releng's hook of the same name): generate all
+# languages listed in /etc/locale.gen (the first-start chooser's languages) once
+# glibc is installed into the live image. build.sh checks the result.
+[Trigger]
+Operation = Install
+Type = Package
+Target = glibc
+
+[Action]
+Description = Generating the SUFUN live languages (locale-gen)...
+When = PostTransaction
+Depends = glibc
+Exec = /usr/bin/locale-gen

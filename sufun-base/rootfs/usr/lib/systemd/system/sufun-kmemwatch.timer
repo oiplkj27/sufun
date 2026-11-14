@@ -1,0 +1,10 @@
+[Unit]
+Description=SUFUN kernel memory check (every 10 minutes)
+
+[Timer]
+OnBootSec=11min
+OnUnitActiveSec=10min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

@@ -1,30 +1,52 @@
 {
   "_comment": [
     "SUFUN Firefox defaults. JSON has no comments, so they are here; Firefox ignores this key.",
-    "uBlock Origin (force-installed): blocks ads and trackers = less RAM and CPU per tab.",
-    "max_total_viewers=0: do not keep whole old pages in RAM for the Back button (Back reloads instead).",
-    "unloadOnLowMemory / processCount=4: fewer content processes, unload background tabs when RAM is low.",
-    "Site isolation (Fission) stays ON: it protects you from malicious sites.",
-    "VA-API on, AV1 off: the UHD 615 decodes VP9/H.264 in hardware but not AV1.",
-    "allow-pipewire: video calls can use the Surface cameras through PipeWire/libcamera."
+    "uBlock Origin: installed for every user from the bundled, Mozilla-signed copy (package sufun-ublock-origin, works offline),",
+    "  'normal_installed' = ON by default but the user CAN switch it off in about:addons (never locked); it updates itself from addons.mozilla.org.",
+    "  Per site: uBlock's own power button. Lists: uBlock's defaults + the Korean list (KOR-1). No other extensions.",
+    "Memory (4 GB): unload background tabs when memory gets low (Linux: off by default in Firefox), earlier than Firefox's 5 %;",
+    "  max_total_viewers=0: Back reloads the page instead of keeping old pages in RAM; fewer content processes.",
+    "Site isolation (Fission) stays ON. No security setting is changed.",
+    "Graphics: hardware WebRender and VA-API video decoding (the UHD 615 decodes VP9/H.264, not AV1).",
+    "allow-pipewire: video calls use the Surface cameras through PipeWire/libcamera.",
+    "All of these are defaults ('Status: default'): users can change them in about:config / Settings."
   ],
   "policies": {
     "DisableTelemetry": true,
     "DisableFirefoxStudies": true,
     "ExtensionSettings": {
       "uBlock0@raymondhill.net": {
-        "installation_mode": "force_installed",
-        "install_url": "https://addons.mozilla.org/firefox/downloads/latest/ublock-origin/latest.xpi"
+        "installation_mode": "normal_installed",
+        "install_url": "file:///usr/share/sufun/firefox/uBlock0@raymondhill.net.xpi"
+      }
+    },
+    "3rdparty": {
+      "Extensions": {
+        "uBlock0@raymondhill.net": {
+          "toOverwrite": {
+            "filterLists": [
+              "user-filters", "ublock-filters", "ublock-badware", "ublock-privacy",
+              "ublock-unbreak", "ublock-quick-fixes", "easylist", "easyprivacy",
+              "urlhaus-1", "plowe-0", "KOR-1"
+            ]
+          }
+        }
       }
     },
     "Preferences": {
+      "gfx.webrender.all": { "Value": true, "Status": "default" },
       "media.ffmpeg.vaapi.enabled": { "Value": true, "Status": "default" },
       "media.hardware-video-decoding.force-enabled": { "Value": true, "Status": "default" },
       "media.av1.enabled": { "Value": false, "Status": "default" },
       "media.webrtc.camera.allow-pipewire": { "Value": true, "Status": "default" },
       "browser.tabs.unloadOnLowMemory": { "Value": true, "Status": "default" },
+      "browser.tabs.min_inactive_duration_before_unload": { "Value": 300000, "Status": "default" },
+      "browser.low_commit_space_threshold_percent": { "Value": 15, "Status": "default" },
+      "browser.low_commit_space_threshold_mb": { "Value": 600, "Status": "default" },
       "browser.sessionhistory.max_total_viewers": { "Value": 0, "Status": "default" },
-      "dom.ipc.processCount": { "Value": 4, "Status": "default" }
+      "dom.ipc.processCount": { "Value": 4, "Status": "default" },
+      "dom.ipc.processCount.webIsolated": { "Value": 1, "Status": "default" },
+      "browser.cache.memory.capacity": { "Value": 32768, "Status": "default" }
     }
   }
 }

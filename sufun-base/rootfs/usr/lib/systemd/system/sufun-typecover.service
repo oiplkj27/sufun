@@ -1,0 +1,18 @@
+# Type Cover touchpad: keep it switched on (see /usr/lib/sufun/typecover).
+[Unit]
+Description=SUFUN: keep the Type Cover touchpad active
+After=systemd-udev-settle.service systemd-udevd.service
+Before=display-manager.service
+Wants=sufun-typecover-rebind.service
+
+[Service]
+ExecStart=/usr/lib/sufun/typecover hold
+Restart=always
+RestartSec=3
+ProtectSystem=strict
+ProtectHome=yes
+NoNewPrivileges=yes
+PrivateNetwork=yes
+
+[Install]
+WantedBy=multi-user.target

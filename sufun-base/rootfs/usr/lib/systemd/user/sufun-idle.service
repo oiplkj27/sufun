@@ -1,0 +1,17 @@
+# Tells sufun-memwatch when you are away: $XDG_RUNTIME_DIR/sufun-memwatch/idle exists
+# after 3 minutes without input. Uses Wayland's idle notification, which KWin does
+# NOT send while an app keeps the screen awake (video, call, presentation).
+[Unit]
+Description=SUFUN idle marker for the memory cleanup
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStartPre=/usr/bin/mkdir -p %t/sufun-memwatch
+ExecStartPre=/usr/bin/rm -f %t/sufun-memwatch/idle
+ExecStart=/usr/bin/swayidle -w timeout 180 'touch %t/sufun-memwatch/idle' resume 'rm -f %t/sufun-memwatch/idle'
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=graphical-session.target

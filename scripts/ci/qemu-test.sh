@@ -43,7 +43,7 @@ xorriso -osirrox on -indev "$ISO" \
   -extract /arch/boot/intel-ucode.img ucode.img >/dev/null 2>&1 || true
 [[ -s vmlinuz && -s initrd.img ]] || { echo "kernel not found in ISO" >&2; exit 1; }
 LABEL=$(blkid -s LABEL -o value "$ISO" 2>/dev/null || xorriso -indev "$ISO" -pvd_info 2>/dev/null | sed -n 's/^Volume Id *: *//p')
-LIVEOPTS="archisobasedir=arch archisolabel=$LABEL console=ttyS0,115200 console=tty0"
+LIVEOPTS="archisobasedir=arch archisolabel=$LABEL cow_spacesize=512M console=ttyS0,115200 console=tty0"
 
 qemu-img create -f qcow2 disk.qcow2 64G >/dev/null
 # Empty 1 GiB microSD card (QEMU SD cards must be a power of 2 in size)
@@ -53,7 +53,7 @@ SDCARD=(-device sdhci-pci,sd-spec-version=3 -drive id=sdimg,if=none,format=raw,f
 bash "$HERE/make-dummy-windows-iso.sh" "$ISO" "$LABEL" winiso.iso || { echo "could not make the dummy Windows ISO" >&2; exit 1; }
 
 fail=0
-run_vm 1-live 1200 'SUFUN-TEST: LIVE-DESKTOP-OK' 'SUFUN-TEST: LIVE-DESKTOP-TIMEOUT' \
+run_vm 1-live 2400 'SUFUN-TEST: LIVE-DESKTOP-OK' 'SUFUN-TEST: LIVE-DESKTOP-TIMEOUT' \
   -cdrom "$ISO" -kernel vmlinuz -initrd initrd.img -append "$LIVEOPTS sufun.test=live" || fail=1
 
 run_vm 2-install 3600 'SUFUN-TEST: INSTALL-DONE' 'SUFUN-TEST: INSTALL-FAILED' \

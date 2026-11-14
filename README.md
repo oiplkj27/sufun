@@ -517,7 +517,8 @@ Step-by-step Korean guide: **[docs/sd-boot-ko.md](docs/sd-boot-ko.md)**.
 - Card case (a) ISO on the internal disk: formats the card (MBR, FAT32 `SUFUNLIVE` ≈ 4 GB, rest left free for "SD카드에 설치"). Case (b) ISO already on the card: no format, extracts in place, offers to delete the ISO.
 - Only disks with BusType SD/MMC or removable media, never the Windows/boot disk; shows size/model; you type `YES`.
 - Boot stage in `\EFI\SUFUN\` of the EFI System Partition if it has room, else C: shrinks by 1 GB for a hidden FAT32 partition `SUFUNBOOT`. The kernel finds the card by its FAT volume UUID (`archisodevice=/dev/disk/by-uuid/XXXX-XXXX`, labels can be only 11 letters).
-- Firmware entry **"SUFUN (SD)"** added **last** (bcdedit `/addlast`): Windows stays the default. Pick it in Windows (Advanced startup → Use a device) or Surface UEFI → Boot configuration.
+- Firmware entry **"SUFUN (SD)"** added **last** (bcdedit `/addlast`): Windows stays the default. Pick it in **Surface UEFI → Boot configuration** (swipe it left). On the Surface Go 3, Windows' *Advanced startup → Use a device* only lists "USB Storage / Internal Storage / PXE Network", **not** "SUFUN (SD)" (checked on the real device).
+- Boot menu entries on the boot stage: **SUFUN Live (microSD)** (SUFUN boot splash, Esc shows the text) and **SUFUN Live (microSD, text mode)** for troubleshooting.
 - `-Uninstall` removes the entry, the boot files and `SUFUNBOOT` (C: back to its old size); the card is left as it is.
 
 The live initramfs explicitly contains the Go 3's microSD reader driver — **Realtek RTS522A (PCI `10ec:522a`): `rtsx_pci` + `rtsx_pci_sdmmc`** (seen in Go 3 kernel logs in linux-surface issues #671/#692) — plus `sdhci`/`sdhci_pci` (Intel SD/eMMC controller), `mmc_block`, `vfat`/`exfat` and NLS (`profile/airootfs/etc/mkinitcpio.conf.d/zz-sufun-sd.conf`). `build.sh` stops if any of them is missing from the built initramfs, or if the ISO's `EFI/BOOT/BOOTx64.EFI` is not systemd-boot (the Windows script reuses it).
@@ -526,11 +527,12 @@ On other PCs a USB stick still works: [Rufus](https://rufus.ie) in **DD image** 
 
 ## 3. Boot it on the Surface Go 3
 1. **Disable Secure Boot**: power off, hold **Volume Up** and press **Power** to open Surface UEFI, go to *Security → Secure Boot → None*.
-2. microSD: in Windows *Settings → System → Recovery → Advanced startup → Use a device → SUFUN (SD)*, or Surface UEFI → *Boot configuration* → swipe **SUFUN (SD)** left. Then pick **SUFUN Live (microSD)**. (Boot menus are in English: firmware has no Korean font.)
-3. The live desktop starts automatically. Connect to Wi-Fi from the taskbar.
+2. microSD: power off, hold **Volume Up** + **Power** → Surface UEFI → *Boot configuration* → swipe **SUFUN (SD)** left (Windows' "Use a device" menu does not list it on the Go 3). Then pick **SUFUN Live (microSD)** — or **… (text mode)** if something goes wrong. (Boot menus are in English: firmware has no Korean font.)
+3. **First start:** a full-screen, touch-friendly chooser asks for **language, time zone and keyboard** (Korean → Asia/Seoul + Korean keyboard with 한/영; optional "find my time zone online"). It runs *before* the desktop, so the desktop starts directly in that language — no logout needed. The installer reuses the choice.
+4. The live desktop starts automatically. Connect to Wi-Fi from the taskbar.
 
 ## 4. Install
-Double-click **Install SUFUN** (or run `sudo sufun-install` in Konsole). Two choices:
+Double-click **Install SUFUN**: a full-screen, touch-friendly installer (like Windows setup) opens. All checks and the typed confirmations (`ERASE` / `YES`) are unchanged — the window only shows the questions of `/usr/local/bin/sufun-install --gui`, which still decides everything (terminal fallback: `sudo sufun-install` in Konsole). Two choices:
 1. **SD카드에 설치 (윈도우 유지)** — btrfs root (same subvolumes and options) in the card's free space after the live partition; the live partition stays as a rescue entry. `/boot` is on the card; the boot stage on the internal disk (mounted at `/efi`, `nofail`, never fsck'ed) gets kernel/initramfs/microcode copies from `/usr/lib/sufun/sync-boot-stage`, run by the pacman hook `99-sufun-boot-stage.hook` and the mkinitcpio post hook. No `bootctl install` (it would put a Linux entry before Windows). On the internal disk only `EFI/SUFUN/` and the SUFUN loader entries are written. Before installing, a 4K random-write test (`fio`, 8 MiB direct I/O) warns in Korean below ~2 MB/s and recommends an A2 card; you can continue.
 2. **내부 저장장치에 설치 (윈도우 삭제)** — erases the internal disk. First a warning that this Surface cannot boot from USB and an offer of a **restore dry-run** (a "Windows Setup" firmware entry that starts the existing Windows, to check it appears in the boot menu). If the live system runs from the card, a rescue entry for it is kept on the new EFI partition.
 
@@ -548,6 +550,41 @@ Afterwards: set the UEFI password (see "UEFI 암호").
 ## Customising
 - Add or remove apps: edit `packages/desktop.txt` (official) and rebuild. Release a new version so installed systems get it.
 - Our own packages (Selawik, ananicy rules, H2Orestart, Bottles) don't update with `pacman -Syu`; they come with `.sufun` updates.
+
+## First real-hardware test (2026-11-14): what changed
+
+| # | Problem on the Surface | What SUFUN does now | Checked in CI? |
+|---|---|---|---|
+| 1a | Touchpad not like Windows | `/etc/xdg/kcminputrc` `[Libinput][Defaults][Touchpad]`: tap-to-click, two-finger tap/click = right click (`ClickMethod=2`), natural scrolling. Every user, the live user and the login screen. Mouse wheels unchanged. | settings: yes; feel: Surface only |
+| 1b | Touchpad dead after boot / after logout | Root cause: since kernel 6.16, hid-multitouch switches the touchpad **off** whenever no program has it open, and on again when one opens it; at logout KWin closes every input, and the Type Cover sometimes ignores the "on". `sufun-typecover.service` keeps the touchpad open all the time (no grab), plus a driver re-probe (= detach/attach) at boot, after resume and at every login (`sufun-typecover-rebind.service`, allowed for the logged-in user by a polkit rule for exactly that unit), no USB autosuspend for `045e:09b5`, and `usbcore.quirks=045e:09b5:g` (delayed init). | services: yes; touchpad: Surface only |
+| 1c | No pointer on the login screen | same fix (the login screen's KWin reads `/etc/xdg` too) | Surface only |
+| 2 | Tapping text fields with touch | no cause found in KDE/Qt (bug 507818 was closed without a fix); not changed. Please try it again with this version and tell me which apps. | Surface only |
+| 3 | Screen turns to portrait in laptop position | `input-switch`: cover open = always landscape (sensor off); tablet mode (1.5 s stable) = rotates. Tray toggle **화면 회전 잠금** (`org.sufun.rotationlock`). | toggle: yes; rotation: Surface only |
+| 4 | No on-screen keyboard on the first tablet mode | KWin needs one activation per session (KDE bug 528575): `input-switch` activates and hides it once after the first switch, and reads plasma-keyboard into memory early | Surface only |
+| 5 | Search keeps the old text | `krunnerrc` `RetainPriorSearch=false` | yes |
+| 6 | Korean missing, clock in UTC; abroad users | 12 languages generated in the live system and installs; first-start chooser (language/time zone/keyboard) before the desktop; installer uses it; graphical installer. Live and SD installs keep the hardware clock in local time like Windows. | yes (Korean and English paths) |
+| 7 | Text scrolls at live boot | Plymouth SUFUN splash in the live initramfs, `quiet splash`; **text mode** entry kept | splash files + entries: yes |
+| 8 | Camera seam/dark, Firefox camera fails | WirePlumber hides the raw IPU3 nodes (`ipu3-cio2`, `ipu3-imgu`) that browsers picked; brighter auto exposure for the front OV5693 (`/etc/libcamera/ipa/ipu3/ov5693.yaml`). The seam has no known cause yet (not the ImgU stripe split); test sizes with `cam` (see docs). | Surface only |
+| 9 | Opening the cover doesn't wake | Go 3: the lid is an embedded-controller event, not a wake GPE (`surface_gpe` has no Go entry); udev makes the lid device a wake source. The microSD reader no longer powers down (faster resume from the card). | Surface only |
+| 10 | Slow from the SD card | live image zstd with 256 KiB blocks (was xz 1 MiB: much less decompression per small read); start menu/search/power menu files read into memory after login on SD (`sufun-preload`); Firefox hardware WebRender + VA-API | partly |
+| 11 | Node 20 warnings | `actions/checkout@v5`, `upload-artifact@v6`, `download-artifact@v7` | yes |
+| 12 | Desktop froze for a minute | `sufun-memguard`: watches memory **pressure** (PSI) and closes the biggest Firefox tab process before a stall; earlyoom acts earlier (8 % RAM / 60 % swap); Firefox unloads background tabs earlier | yes (memory stall test) |
+| 13 | Ads | uBlock Origin (bundled signed .xpi, package `sufun-ublock-origin`), `normal_installed` = on but can be switched off, Korean list `KOR-1` | yes |
+| 14 | RAM | Firefox: tab unloading at 15 %/600 MB, 1 process per site (Fission on), 32 MB memory cache, no disk cache in the live system; live journal in RAM capped at 24 MB, cowspace 512 MB; zswap off; more unused KDE background modules off | numbers: CI INFO lines |
+| 15 | Leaks | `sufun-memwatch` (user timer, every 3 min) + `sufun-kmemwatch` (root, kernel memory) | yes (simulated) |
+| 16 | System Monitor | sensor packages (`libnl`, `networkmanager-qt`), Ctrl+Shift+Esc / Ctrl+Esc / Win+Esc. Shortcuts now in `/etc/skel/.config/kglobalshortcutsrc` — KDE's shortcut service never read `/etc/xdg`. The Disks panel only lists mounted partitions (live system: none). | sensors + shortcuts: yes |
+
+### 광고 차단 (uBlock Origin)
+Firefox에는 광고 차단(uBlock Origin)이 기본으로 켜져 있습니다 (한국어 필터 목록 포함).
+
+- **광고 차단 끄기: 툴바의 uBlock 아이콘 → 전원 버튼(이 사이트만) / Firefox 메뉴 → 확장 기능 및 테마 → uBlock Origin 끄기(전체)**
+- 필터 목록은 시작할 때마다 SUFUN 기본값(uBlock 기본 + 한국어)으로 맞춰집니다. 사이트별 허용(전원 버튼)과 "내 필터"는 그대로 유지됩니다.
+
+### 메모리 자동 정리 (sufun-memwatch)
+바탕 화면 도우미 프로그램(plasmashell 등)이 시간이 지나며 메모리를 너무 많이 쓰게 되면, 자리를 비웠을 때(3분 동안 입력 없음, 동영상/통화/화면 공유 중이 아닐 때) 조용히 다시 시작합니다.
+KWin(화면 전체)과 Firefox는 절대 건드리지 않습니다. 알림은 한 시간에 한 번까지, 같은 프로그램은 부팅당 3번까지만.
+시스템(커널) 메모리가 계속 새면 "다시 시작하면 정리됩니다" 알림이 부팅당 한 번 나옵니다 (닫으면 3일 동안 안 나옴, "다시 보지 않기" 가능).
+**끄기:** `~/.config/sufun/memwatch.conf` 에 `enabled=false` 를 쓰거나, 터미널에서 `systemctl --user disable --now sufun-memwatch.timer`.
 
 ## Known risks (not yet tested on real hardware)
 The ISO is built and boot-tested in GitHub Actions (virtual machine), but not yet on a real Surface Go 3. Most likely to need a fix on real hardware:

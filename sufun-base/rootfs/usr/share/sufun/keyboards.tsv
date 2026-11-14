@@ -1,0 +1,12 @@
+# Keyboard layouts offered by the SUFUN first-start chooser and the installer.
+# Columns (TAB-separated): id, name shown, XKB layout (Plasma/KWin), console keymap, Fcitx5 input methods
+# "kr" = the Type Cover as it is (US letters) + Korean typing with 한/영 (Fcitx5 Hangul).
+kr	한국어 (두벌식, 한/영)	us	us	keyboard-us,hangul
+us	English (US)	us	us	keyboard-us
+gb	English (UK)	gb	uk	keyboard-gb
+de	Deutsch	de	de-latin1	keyboard-de
+fr	Français (AZERTY)	fr	fr-latin1	keyboard-fr
+es	Español	es	es	keyboard-es
+it	Italiano	it	it	keyboard-it
+br	Português (Brasil, ABNT2)	br	br-abnt2	keyboard-br
+jp	日本語 (JIS)	jp	jp106	keyboard-jp

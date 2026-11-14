@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# "SUFUN 설치" on the live desktop: the full-screen installer window
+# (/usr/share/sufun-iso/installer/Installer.qml) + the installer itself
+# (/usr/local/bin/sufun-install --gui, as root). The window's answers go through
+# a pipe into the installer; the installer writes its questions and progress to
+# /run/sufun-install for the window. If the window can't start (no Qt QML
+# runtime), the old terminal installer opens instead.
+#   sufun-install-gui --test-cancel   CI only: show the first question, then cancel
+QML=
+for q in qml6 /usr/lib/qt6/bin/qml qml; do
+  command -v "$q" >/dev/null 2>&1 && { QML=$(command -v "$q"); break; }
+done
+if [[ -z $QML ]]; then
+  exec konsole -e sudo /usr/local/bin/sufun-install
+fi
+export QML_XHR_ALLOW_FILE_READ=1 QT_MESSAGE_PATTERN='%{message}'
+if compgen -G '/usr/lib/qt6/qml/QtQuick/Controls/FluentWinUI3/*' >/dev/null; then
+  export QT_QUICK_CONTROLS_STYLE=FluentWinUI3
+else
+  export QT_QUICK_CONTROLS_STYLE=Basic
+fi
+args=()
+[[ ${1:-} == --test-cancel ]] && args=(-- test=cancel)
+# Old questions from an earlier run must not show up in the new window
+sudo rm -rf /run/sufun-install
+# Window stderr (answers) -> installer stdin. Window stdout is not used.
+"$QML" /usr/share/sufun-iso/installer/Installer.qml "${args[@]}" 2>&1 >/dev/null \
+  | sudo /usr/local/bin/sufun-install --gui

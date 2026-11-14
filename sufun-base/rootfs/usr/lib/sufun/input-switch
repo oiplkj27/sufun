@@ -1,38 +1,111 @@
 #!/usr/bin/env bash
-# Picks the keyboard input method from KWin's tablet mode:
-#   laptop (Type Cover attached) -> Fcitx5 (Korean + English typing)
-#   tablet (cover detached or folded back) -> Plasma on-screen keyboard
-# Why: KWin runs only ONE input method at a time, and Fcitx5 has no on-screen
-# keyboard. Without this, the lock screen in tablet mode had no keyboard to type
-# the password with. The on-screen keyboard also works on the lock screen.
-# Writing kwinrc with --notify makes KWin restart the input method right away.
+# Follows KWin's tablet mode (Type Cover folded back or detached = tablet):
+#   1. keyboard input method
+#        laptop -> Fcitx5 (Korean + English typing on the Type Cover)
+#        tablet -> Plasma on-screen keyboard
+#      KWin runs only ONE input method at a time and Fcitx5 has no on-screen
+#      keyboard. Writing kwinrc with --notify makes KWin switch right away.
+#   2. screen rotation (like Windows)
+#        laptop -> always landscape, the sensor is ignored (no flipping to portrait
+#                  when you tilt the Surface on your lap)
+#        tablet -> turns with the device, unless the rotation lock is on
+#      The rotation lock is the tray toggle "화면 회전 잠금" (org.sufun.rotationlock),
+#      stored as ~/.config/sufun/rotation-lock.
+# Tablet mode must last 1.5 seconds before the screen may rotate: a short wrong
+# "tablet" signal while you move the cover never turns the screen.
+#
+#   input-switch            the user service (sufun-input-switch.service)
+#   input-switch rotation   re-apply only the rotation rule (used by the lock toggle)
 FCITX=/usr/share/applications/org.fcitx.Fcitx5.desktop
 OSK=/usr/share/applications/org.kde.plasma.keyboard.desktop
+LOCK="${XDG_CONFIG_HOME:-$HOME/.config}/sufun/rotation-lock"
+STATE="${XDG_RUNTIME_DIR:-/tmp}/sufun-tablet-mode"
 last=""
+osk_primed=0
 
-apply() {  # apply true|false
+log() { echo "sufun-input-switch: $*"; }
+current() {  # prints true/false
+  busctl --user get-property org.kde.KWin /org/kde/KWin org.kde.KWin.TabletModeManager tabletMode 2>/dev/null \
+    | awk '{print $2}'
+}
+panel() {  # name of the built-in screen (eDP-1)
+  kscreen-doctor -o 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | awk '/^Output:/ {print $3}' | grep -m1 -E '^eDP'
+}
+
+rotation() {  # rotation true|false: apply the rule for this mode
+  local out; out=$(panel)
+  [[ -n $out ]] || return 0
+  if [[ $1 == true && ! -e $LOCK ]]; then
+    kscreen-doctor "output.$out.autoRotatePolicy.inTabletMode" >/dev/null 2>&1
+    log "rotation: follows the device (tablet)"
+  else
+    # Never turn: switch the sensor off and go back to landscape. With the lock
+    # on in tablet mode, the current direction is kept instead.
+    kscreen-doctor "output.$out.autoRotatePolicy.never" >/dev/null 2>&1
+    [[ $1 == true ]] || kscreen-doctor "output.$out.rotation.normal" >/dev/null 2>&1
+    log "rotation: fixed ($([[ $1 == true ]] && echo 'locked' || echo 'landscape, cover open'))"
+  fi
+}
+
+osk_prime() {
+  # KWin 6.8 shows the on-screen keyboard on the first text-field tap only after
+  # it was activated once in the session (KDE bug 528575): the FIRST tablet mode
+  # after boot showed no keyboard. Once plasma-keyboard is running, activate it
+  # once and hide it again.
+  (( osk_primed )) && return
+  local i
+  for i in $(seq 1 40); do
+    pgrep -u "$UID" -f plasma-keyboard >/dev/null && break
+    sleep 0.25
+  done
+  sleep 1
+  busctl --user call org.kde.KWin /VirtualKeyboard org.kde.kwin.VirtualKeyboard forceActivate >/dev/null 2>&1 \
+    && { sleep 0.5
+         busctl --user set-property org.kde.KWin /VirtualKeyboard org.kde.kwin.VirtualKeyboard active b false >/dev/null 2>&1
+         osk_primed=1; log "on-screen keyboard primed"; }
+}
+
+keyboard() {  # keyboard true|false
   local want=$FCITX
   [[ $1 == true ]] && want=$OSK
   [[ $want == "$last" ]] && return
   kwriteconfig6 --file kwinrc --group Wayland --key InputMethod --notify "$want"
   last=$want
+  [[ $1 == true ]] && osk_prime
 }
 
-current() {  # prints true/false
-  busctl --user get-property org.kde.KWin /org/kde/KWin org.kde.KWin.TabletModeManager tabletMode 2>/dev/null \
-    | awk '{print $2}'
-}
+if [[ ${1:-} == rotation ]]; then
+  rotation "$(cat "$STATE" 2>/dev/null || current)"
+  exit 0
+fi
 
 # Wait until KWin answers (the service may start before KWin is ready)
 for _ in $(seq 1 30); do s=$(current); [[ -n $s ]] && break; sleep 1; done
-apply "${s:-false}"
+s=${s:-false}
+echo "$s" > "$STATE"
+keyboard "$s"
+rotation "$s"
+# Read plasma-keyboard into memory now (slow microSD): the first switch is quick
+( exec ionice -c3 nice -n 19 cat /usr/bin/plasma-keyboard /usr/lib/qt6/qml/org/kde/plasma/keyboard/* \
+    >/dev/null 2>&1 ) &
+
+pending=""
+apply_later() {  # tablet mode must still be on after 1.5 s before rotating
+  [[ -n $pending ]] && kill "$pending" 2>/dev/null
+  ( sleep 1.5; [[ $(current) == true ]] && "$0" rotation ) &
+  pending=$!
+}
 
 # React to every change. gdbus prints one line per signal, e.g.
 #   /org/kde/KWin: org.kde.KWin.TabletModeManager.tabletModeChanged (true,)
 gdbus monitor --session --dest org.kde.KWin --object-path /org/kde/KWin 2>/dev/null |
 while read -r line; do
   case "$line" in
-    *tabletModeChanged*true*)  apply true ;;
-    *tabletModeChanged*false*) apply false ;;
+    *tabletModeChanged*true*)
+      echo true > "$STATE"; keyboard true; apply_later ;;
+    *tabletModeChanged*false*)
+      echo false > "$STATE"
+      [[ -n $pending ]] && kill "$pending" 2>/dev/null; pending=""
+      keyboard false; rotation false ;;
   esac
 done

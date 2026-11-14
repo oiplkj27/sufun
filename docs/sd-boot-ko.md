@@ -82,14 +82,24 @@ microSD 카드를 Surface 뒷면 받침대(킥스탠드) 아래 슬롯에 끝까
 
 ## 4. SUFUN 켜기
 
-카드를 꽂은 채로, 둘 중 하나:
+카드를 꽂은 채로:
 
-- **Windows에서:** 설정 → 시스템 → 복구 → 고급 시작 **"지금 다시 시작"** → **장치 사용** → **SUFUN (SD)**
-- **꺼진 상태에서:** **볼륨 위(+)** 를 누른 채 **전원** → Surface UEFI → **Boot configuration** →
-  **SUFUN (SD)** 를 **왼쪽으로 밀기(swipe)** = 지금 한 번 그걸로 부팅
+1. Surface를 **끕니다**.
+2. **볼륨 위(+)** 버튼을 누른 채 **전원** 버튼을 누릅니다 → Surface UEFI 화면이 열립니다.
+3. **Boot configuration** → **SUFUN (SD)** 를 **왼쪽으로 밀기(swipe)** = 지금 한 번 그걸로 부팅.
+
+> **Windows의 "고급 시작 → 장치 사용"으로는 안 됩니다.** 이 Surface에서는 그 목록에
+> "USB Storage / Internal Storage / PXE Network" 만 나오고 **SUFUN (SD)** 는 나오지 않습니다
+> (실제 Surface Go 3에서 확인). **SUFUN (SD)** 는 Surface UEFI의 Boot configuration 목록에만 보입니다.
 
 검은 부팅 메뉴가 나오면 **SUFUN Live (microSD)** 를 고릅니다 (4초 뒤 자동).
 메뉴 글자는 영어입니다: 펌웨어 화면에는 한글 글꼴이 없어서입니다.
+
+- 켜지는 동안 **SUFUN 로고 화면**(부팅 스플래시)이 보입니다. **Esc** 를 누르면 글자(부팅 메시지)가 보입니다.
+- 문제가 있을 때는 메뉴에서 **SUFUN Live (microSD, text mode)** 를 고르세요: 로고 화면 없이 글자로 켜집니다.
+- 처음에는 **언어 · 시간대 · 키보드** 를 고르는 화면이 나옵니다 (손가락으로 눌러도 됩니다).
+  한국어를 고르면 서울 시간대와 한국어 키보드(한/영)가 함께 정해집니다. 여기서 고른 값은
+  나중에 **SUFUN 설치** 때 그대로 쓰여서 다시 묻지 않습니다.
 
 처음 켤 때 카드가 느리면 1~2분 걸릴 수 있습니다. 바탕 화면이 나오면 Wi-Fi를 연결하세요.
 
@@ -106,7 +116,8 @@ microSD 카드를 Surface 뒷면 받침대(킥스탠드) 아래 슬롯에 끝까
    - 라이브 파티션은 지우지 않습니다: 부팅 메뉴에 **SUFUN Live (microSD, rescue)** 로 남아 복구용으로 씁니다.
    - 커널이 업데이트되면 새 커널이 자동으로 내부 저장장치의 부팅 단계에 복사됩니다
      (pacman 훅 + mkinitcpio 훅, `/usr/lib/sufun/sync-boot-stage`).
-   - 켜는 방법은 4번과 같습니다 (**SUFUN (SD)**). 부팅 메뉴의 기본이 **SUFUN (microSD)** 로 바뀝니다.
+   - 켜는 방법은 4번과 같습니다 (Surface UEFI → Boot configuration → **SUFUN (SD)** 밀기).
+     부팅 메뉴의 기본이 **SUFUN (microSD)** 로 바뀝니다.
 2. **내부 저장장치에 설치 (윈도우 삭제)** — Windows가 지워집니다. 먼저
    [windows-restore-ko.md](windows-restore-ko.md) 를 꼭 읽으세요.
    설치 프로그램이 **복원 드라이런**(Windows를 지우기 전에 "Windows Setup" 부팅 항목이 실제로
@@ -136,5 +147,7 @@ microSD 카드의 파일은 그대로 둡니다. 카드를 다른 용도로 쓰�
 | "스크립트를 실행할 수 없습니다" | 명령 앞에 `powershell -ExecutionPolicy Bypass -File` 를 붙여 실행 (위 3번) |
 | "microSD 카드를 찾을 수 없습니다" | 카드를 다시 끝까지 넣고, 탐색기에 보이는지 확인 |
 | 다음 Windows 시작 때 **BitLocker 복구 키** 화면 | 적어 둔 48자리 키를 입력 (한 번만 물어봄) |
-| 부팅 메뉴에 **SUFUN (SD)** 가 없음 | 스크립트를 다시 실행 (같은 항목을 다시 씀) |
+| Windows "고급 시작 → 장치 사용" 에 **SUFUN (SD)** 가 없음 | 정상입니다. Surface UEFI(볼륨 위 + 전원) → Boot configuration 에서 고르세요 |
+| Surface UEFI Boot configuration 에 **SUFUN (SD)** 가 없음 | 스크립트를 다시 실행 (같은 항목을 다시 씀) |
+| 로고 화면에서 멈춘 것 같음 | **Esc** 로 글자를 보거나, 부팅 메뉴에서 **text mode** 를 고르세요 |
 | SUFUN Live가 "waiting for device" 에서 멈춤 | 카드가 꽂혀 있는지 확인. 카드를 다시 만들었다면 스크립트를 다시 실행 (카드 UUID가 바뀜) |

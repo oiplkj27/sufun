@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# sufun-memguard: stops the "whole desktop frozen for a minute" kind of memory stall.
+#
+# Why earlyoom alone was not enough: earlyoom looks at FREE memory (and free zram
+# swap). On the live system the freeze came earlier: programs' code is read from
+# the squashfs on the slow microSD card, and when RAM gets tight the kernel throws
+# that code out and has to read it again and again ("thrashing") while plenty of
+# zram swap is still free. The kernel measures exactly this as "memory pressure"
+# (PSI, /proc/pressure/memory): the share of time programs wait for memory.
+#
+# What it does, checked every 2 seconds (a few file reads, no programs started):
+#   pressure high for ~4-6 s  ->  close the BIGGEST Firefox tab process
+#   (Firefox shows "this tab crashed - reload"; the other tabs and the browser stay),
+#   then Steam's built-in browser if there is no Firefox tab. Never anything else:
+#   never KWin, Plasma, the login screen, sound or network.
+# Before that, Firefox itself unloads background tabs earlier than usual
+# (policies.json: browser.low_commit_space_threshold_percent / _mb).
+# Log: journalctl -u sufun-memguard. Off: systemctl disable --now sufun-memguard
+set -u
+FULL_LIMIT=${SUFUN_MEMGUARD_FULL:-20}    # % of time ALL programs wait for memory (avg 10 s)
+SOME_LIMIT=${SUFUN_MEMGUARD_SOME:-50}    # % of time SOME program waits for memory (avg 10 s)
+PRESSURE=${SUFUN_MEMGUARD_PSI:-/proc/pressure/memory}
+COOLDOWN=20                              # seconds after an action before the next one
+TARGETS='^(Isolated Web Co|Web Content|file:// Content|Isolated Servic)$'
+LAST_RESORT='^(steamwebhelper)$'
+
+enable -f /usr/lib/bash/sleep sleep 2>/dev/null || true   # sleep without starting a program
+log() { echo "sufun-memguard: $*"; }
+notify() {  # shown by systembus-notify in the user's desktop (like earlyoom -n)
+  dbus-send --system --type=signal / net.nuetzlich.SystemNotifications.Notify \
+    "string:$1" "string:$2" >/dev/null 2>&1 || true
+}
+avg10() {  # avg10 <some|full> -> integer percent
+  local kind rest v
+  while read -r kind rest; do
+    [[ $kind == "$1" ]] || continue
+    v=${rest#avg10=}; v=${v%% *}; echo "${v%%.*}"; return
+  done < "$PRESSURE"
+  echo 0
+}
+biggest() {  # biggest <regex>: "<pid> <rss kB> <name>" of the largest matching process
+  local d n r best=0 bpid= bname=
+  for d in /proc/[0-9]*; do
+    read -r n < "$d/comm" 2>/dev/null || continue
+    [[ $n =~ $1 ]] || continue
+    r=0
+    while read -r k v _; do [[ $k == VmRSS: ]] && { r=$v; break; }; done < "$d/status" 2>/dev/null
+    (( r > best )) && { best=$r; bpid=${d#/proc/}; bname=$n; }
+  done
+  [[ -n $bpid ]] && echo "$bpid $best $bname"
+}
+act() {
+  local who pid rss name
+  who=$(biggest "$TARGETS"); [[ -n $who ]] || who=$(biggest "$LAST_RESORT")
+  if [[ -z $who ]]; then log "memory pressure high, but no browser process to close"; return; fi
+  read -r pid rss name <<< "$who"
+  log "memory pressure high (some $1%, full $2%): closing $name (pid $pid, $((rss / 1024)) MB)"
+  kill -TERM "$pid" 2>/dev/null
+  sleep 2
+  kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null
+  log "closed pid $pid"
+  notify "메모리가 부족했습니다" "멈춤을 막으려고 메모리를 가장 많이 쓰던 브라우저 탭($((rss / 1024)) MB)을 닫았습니다. 그 탭을 다시 불러오면 됩니다."
+}
+
+[[ -r $PRESSURE ]] || { log "no $PRESSURE (kernel without PSI): nothing to do"; exit 0; }
+log "watching memory pressure (full >= ${FULL_LIMIT}% or some >= ${SOME_LIMIT}%)"
+hot=0 quiet_until=0
+while :; do
+  sleep 2
+  s=$(avg10 some); f=$(avg10 full)
+  if (( f >= FULL_LIMIT || s >= SOME_LIMIT )); then hot=$((hot + 1)); else hot=0; fi
+  if (( hot >= 2 && SECONDS >= quiet_until )); then
+    act "$s" "$f"
+    hot=0; quiet_until=$((SECONDS + COOLDOWN))
+  fi
+done

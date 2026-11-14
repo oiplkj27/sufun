@@ -1,4 +1,6 @@
 # Windows-style keyboard shortcuts (Win = Meta in KDE), for every new user.
+# In /etc/skel (copied into each new user's home, also the live user): KDE's
+# shortcut service reads only the user's own file, never /etc/xdg.
 # Format in normal groups: action=current shortcut(s),default shortcut(s),description
 #   (several shortcuts are separated by a TAB, written here as \t; "none" = no shortcut)
 # Format in [services][<app>.desktop] groups: action=shortcut(s) only.
@@ -9,7 +11,7 @@
 #   Win+Tab             Task View (KWin Overview)    Win+V        clipboard history (Plasma default)
 #   Win+Shift+S         screenshot of an area        Win+A        quick settings (system tray)
 #   Win+N               notifications (set by /usr/lib/sufun/first-login)
-#   Ctrl+Shift+Esc      Task Manager (System Monitor)
+#   Ctrl+Shift+Esc      Task Manager (System Monitor); Ctrl+Esc and Win+Esc too
 #   Win alone           start menu (kwinrc)          Print        Spectacle (screenshot tool)
 
 [services][org.kde.dolphin.desktop]
@@ -22,7 +24,7 @@ _launch=Alt+Space\tAlt+F2\tSearch\tMeta+R
 _launch=Meta+I
 
 [services][org.kde.plasma-systemmonitor.desktop]
-_launch=Ctrl+Shift+Esc\tMeta+Esc
+_launch=Ctrl+Shift+Esc\tCtrl+Esc\tMeta+Esc
 
 [services][org.kde.spectacle.desktop]
 # Spectacle's own default puts Win+Shift+S on "open Spectacle" and Win+R on
