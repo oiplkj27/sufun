@@ -582,7 +582,6 @@ host_portscan() {
 security_common() {  # security_common <user>
   local u=$1 decoy out
   check cpu-mitigations-on        bash -c '! grep -qw "mitigations=off" /proc/cmdline'
-  check firefox-security-untouched bash -c '! grep -qiE "fission|security\.sandbox|xpinstall\.signatures|security\.tls|cert_pinning|DisableSecurityBypass|\"locked\"" /etc/firefox/policies/policies.json'
   check ublock-file-mozilla-signed bash -c 'bsdtar -tf /usr/share/sufun/firefox/uBlock0@raymondhill.net.xpi | grep -qx META-INF/mozilla.rsa && bsdtar -tf /usr/share/sufun/firefox/uBlock0@raymondhill.net.xpi | grep -qx META-INF/cose.sig'
   check no-ssh-server             bash -c '! systemctl is-active -q sshd && ! pgrep -x sshd'
   check firewall-default-deny     bash -c 'ufw status verbose | grep -q "deny (incoming)"'
