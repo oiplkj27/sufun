@@ -636,7 +636,7 @@ security_accounts() {   # before the test logs in (no desktop needed)
   check root-account-locked       bash -c '[[ $(passwd -S root | awk "{print \$2}") == L ]]'
   check no-empty-password         bash -c '! awk -F: "\$2 == \"\" {f=1} END {exit !f}" /etc/shadow'
   check no-live-user              bash -c '! id sufun'
-  check sudo-always-asks-password bash -c '! grep -rIs NOPASSWD /etc/sudoers /etc/sudoers.d'
+  check sudo-always-asks-password bash -c '! grep -rIshE "^[^#]*NOPASSWD" /etc/sudoers /etc/sudoers.d'
   check sddm-no-autologin         bash -c '! grep -rIshE "^User=.+" /etc/sddm.conf /etc/sddm.conf.d /usr/lib/sddm/sddm.conf.d'
   check boot-menu-editor-off      bash -c 'grep -qx "editor no" /boot/loader/loader.conf 2>/dev/null || grep -qx "editor no" /efi/loader/loader.conf'
   check boot-partition-root-only  bash -c '[[ $(stat -c %a /efi 2>/dev/null) == 700 || $(stat -c %a /boot) == 700 ]]'

@@ -63,7 +63,7 @@ X="$WORK/x"; mkdir "$X" || fail "$BAD"
 TAR=(tar --force-local)
 
 # --- 1. file names and types (before extracting anything) ---
-NAME_RE='^(manifest|notes\.ko\.txt|SHA256SUMS|SHA256SUMS\.sig|packages/|packages/[A-Za-z0-9@._+-]+\.pkg\.tar\.zst(\.sig)?)$'
+NAME_RE='^(manifest|notes\.ko\.txt|SHA256SUMS|SHA256SUMS\.sig|packages/|packages/[A-Za-z0-9@._+:-]+\.pkg\.tar\.zst(\.sig)?)$'
 listing=$("${TAR[@]}" -tf "$SRC" 2>/dev/null) || fail "$BAD"
 [[ -n $listing ]] || fail "$BAD"
 while IFS= read -r n; do
