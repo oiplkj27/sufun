@@ -257,7 +257,7 @@ check_desktop_extras() {  # check_desktop_extras <user>
 # --- System Monitor sensors (ksystemstats) ---
 check_sensors() {  # check_sensors <user>
   local u=$1 all s
-  all=$(ubus "$u" timeout 60 busctl --user --timeout=50 call org.kde.ksystemstats1 / org.kde.ksystemstats1 allSensors 2>&1)
+  all=$(ubus "$u" timeout 60 busctl --user --timeout=50 call org.kde.ksystemstats1 /org/kde/ksystemstats1 org.kde.ksystemstats1 allSensors 2>&1)
   say "INFO ksystemstats answer: $(head -c 240 <<< "$all" | tr '\n' ' ')"
   for s in cpu/all/usage memory/physical/used memory/physical/total memory/swap/used; do
     check "sensor-${s//\//-}" grep -qF "\"$s\"" <<< "$all"
@@ -354,13 +354,16 @@ HTML
   while (( SECONDS - t0 < 360 )); do
     [[ -z $h ]] && h=$(pgrep -u "$u" -x 'file:// Content' | head -n1)
     if [[ -n $h ]]; then
-      if kill -0 "$h" 2>/dev/null; then
-        hrss=$(awk '/^VmRSS:/ {print $2}' "/proc/$h/status" 2>/dev/null || echo "$hrss")
-        bigp=$h bigr=0
-        for p in $(pgrep -u "$u" -f -- '-contentproc'); do
-          r=$(awk '/^VmRSS:/ {print $2}' "/proc/$p/status" 2>/dev/null || echo 0)
-          (( r > bigr )) && { bigr=$r; bigp=$p; }
-        done
+      # (a closed process may still be listed for a moment as a "zombie": state Z, no memory)
+      if kill -0 "$h" 2>/dev/null && ! grep -q '^State:[[:space:]]*Z' "/proc/$h/status" 2>/dev/null; then
+        r=$(awk '/^VmRSS:/ {print $2}' "/proc/$h/status" 2>/dev/null)
+        if [[ -n $r ]] && (( r > 0 )); then
+          hrss=$r bigp=$h bigr=0
+          for p in $(pgrep -u "$u" -f -- '-contentproc'); do
+            r=$(awk '/^VmRSS:/ {print $2}' "/proc/$p/status" 2>/dev/null)
+            (( ${r:-0} > bigr )) && { bigr=${r:-0}; bigp=$p; }
+          done
+        fi
         (( SECONDS - t0 == 30 )) && say "SHOT memory-test"
       else
         gone=1
