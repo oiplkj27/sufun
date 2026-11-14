@@ -665,7 +665,7 @@ HOST_NAME=$1 USER_NAME=$2 MODE=$3 LOCALES=$4
 # install Windows stays, and Windows keeps the clock in local time: do the same,
 # so neither system shows the wrong time after the other one ran.
 if [[ $MODE == sd ]]; then hwclock --systohc --localtime; else hwclock --systohc --utc; fi
-for l in $LOCALES; do sed -i "s/^#\(${l//./\\.} \)/\1/" /etc/locale.gen; done
+{ echo; echo "# SUFUN: the languages of the first-start chooser"; for l in $LOCALES; do echo "$l UTF-8"; done; } >> /etc/locale.gen
 locale-gen
 echo "$HOST_NAME" > /etc/hostname
 printf '127.0.0.1 localhost\n::1 localhost\n127.0.1.1 %s\n' "$HOST_NAME" > /etc/hosts

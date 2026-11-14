@@ -12,6 +12,8 @@
 #   sufun.test=winsetup   started from the Windows restore test partition: report, power off
 #   (installed, 2nd start with /var/lib/sufun-test/restore-phase: Windows restore cleanup test)
 MODE=$(sed -n 's/.*sufun\.test=\([a-z]*\).*/\1/p' /proc/cmdline)
+# Tool output in English, whatever language the first-start chooser picked
+export LC_ALL=C.UTF-8
 [[ -n $MODE ]] || exit 0
 say() { echo "SUFUN-TEST: $*" > /dev/ttyS0; echo "SUFUN-TEST: $*"; }
 # The serial login prompt (agetty) hangs up /dev/ttyS0 when it starts; a program
@@ -255,7 +257,8 @@ check_desktop_extras() {  # check_desktop_extras <user>
 # --- System Monitor sensors (ksystemstats) ---
 check_sensors() {  # check_sensors <user>
   local u=$1 all s
-  all=$(ubus "$u" timeout 60 busctl --user call org.kde.ksystemstats1 / org.kde.ksystemstats1 allSensors 2>/dev/null)
+  all=$(ubus "$u" timeout 60 busctl --user --timeout=50 call org.kde.ksystemstats1 / org.kde.ksystemstats1 allSensors 2>&1)
+  say "INFO ksystemstats answer: $(head -c 240 <<< "$all" | tr '\n' ' ')"
   for s in cpu/all/usage memory/physical/used memory/physical/total memory/swap/used; do
     check "sensor-${s//\//-}" grep -qF "\"$s\"" <<< "$all"
   done
@@ -322,7 +325,7 @@ ping_ms() {  # ping_ms <user> <service> <path>: how long a D-Bus "ping" to it ta
 # --- memory stall: a Firefox tab eats memory; the desktop must stay responsive
 # and the biggest Firefox process must be the one that is closed ---
 memory_pressure_test() {  # memory_pressure_test <user>
-  local u=$1 hog=/tmp/sufun-hog.html big kw ps fx t0 lat max=0 i gone=0 who
+  local u=$1 hog=/tmp/sufun-hog.html kw ps fx t0 lat max=0 gone=0 who h= hrss=0 bigp bigr p r limit=5000 extra
   cat > "$hog" <<'HTML'
 <!doctype html><title>SUFUN memory test</title><body><h1 id=s>0 MB</h1><script>
 // Keeps allocating memory that can't be compressed (random bytes), 64 MB at a time.
@@ -331,37 +334,58 @@ function more() {
   var a = new Uint8Array(64 * 1024 * 1024);
   for (var o = 0; o < a.length; o += 65536) crypto.getRandomValues(a.subarray(o, o + 65536));
   keep.push(a); n += 64; document.getElementById('s').textContent = n + ' MB';
-  setTimeout(more, 150);
+  setTimeout(more, 500);
 }
-setTimeout(more, 3000);
+setTimeout(more, 8000);
 </script>
 HTML
   chmod 644 "$hog"
+  # Running from the (emulated, very slow) SD card every test command itself has
+  # to be read from the card again under memory pressure: allow 10 s there.
+  [[ $(findmnt -no SOURCE /run/archiso/bootmnt 2>/dev/null) == /dev/mmcblk* ]] && limit=10000
   kw=$(pgrep -x kwin_wayland | head -n1); ps=$(pgrep -u "$u" -x plasmashell | head -n1)
   fx=$(pgrep -u "$u" -x firefox | head -n1)
   if [[ -z $fx ]]; then as_user "$u" firefox --new-window about:blank >/dev/null 2>&1; sleep 20; fx=$(pgrep -u "$u" -x firefox | head -n1); fi
+  local before; before=$(journalctl -b -u sufun-memguard -o cat 2>/dev/null | grep -c 'closing')
   as_user "$u" firefox --new-tab "file://$hog" >/dev/null 2>&1
-  sleep 25
-  # the biggest Firefox tab process now = the test page
-  big=$(for p in $(pgrep -u "$u" -f -- '-contentproc'); do echo "$(awk '/^VmRSS:/ {print $2}' /proc/$p/status 2>/dev/null || echo 0) $p"; done | sort -nr | head -n1 | awk '{print $2}')
-  say "INFO memory test: biggest Firefox process $big ($(tr -d '\0' < /proc/$big/comm 2>/dev/null)), kwin $kw, plasmashell $ps, firefox $fx"
-  say "SHOT memory-test"
   t0=$SECONDS
-  while (( SECONDS - t0 < 300 )); do
+  # Follow the test page's process ("file:// Content") from the start; every second:
+  # is it still the biggest Firefox process? how fast do KWin and Plasma answer?
+  while (( SECONDS - t0 < 360 )); do
+    [[ -z $h ]] && h=$(pgrep -u "$u" -x 'file:// Content' | head -n1)
+    if [[ -n $h ]]; then
+      if kill -0 "$h" 2>/dev/null; then
+        hrss=$(awk '/^VmRSS:/ {print $2}' "/proc/$h/status" 2>/dev/null || echo "$hrss")
+        bigp=$h bigr=0
+        for p in $(pgrep -u "$u" -f -- '-contentproc'); do
+          r=$(awk '/^VmRSS:/ {print $2}' "/proc/$p/status" 2>/dev/null || echo 0)
+          (( r > bigr )) && { bigr=$r; bigp=$p; }
+        done
+        (( SECONDS - t0 == 30 )) && say "SHOT memory-test"
+      else
+        gone=1
+      fi
+    fi
     lat=$(ping_ms "$u" org.kde.KWin /KWin); (( lat > max )) && max=$lat
     lat=$(ping_ms "$u" org.kde.plasmashell /PlasmaShell); (( lat > max )) && max=$lat
-    if ! kill -0 "$big" 2>/dev/null; then gone=1; break; fi
+    (( gone )) && break
     sleep 1
   done
-  say "INFO memory test: page closed after $((SECONDS - t0)) s, slowest desktop answer $max ms, PSI: $(head -n1 /proc/pressure/memory)"
-  who=$( { journalctl -b -u sufun-memguard -o cat; journalctl -b -u earlyoom -o cat; journalctl -b -k -o cat | grep -i 'killed process'; } 2>/dev/null | grep -E "pid $big|\($big\)|process $big " | tail -n 2 | tr '\n' ' ')
+  say "SHOT memory-test-after"
+  sleep 15    # anything else closed right after it?
+  say "INFO memory test: test page pid ${h:-?} ($((hrss / 1024)) MB at the last look; biggest then: pid ${bigp:-?}), closed after $((SECONDS - t0 - 15)) s, slowest desktop answer $max ms (limit $limit)"
+  who=$( { journalctl -b -u sufun-memguard -o cat; journalctl -b -u earlyoom -o cat; journalctl -b -k -o cat | grep -i 'killed process'; } 2>/dev/null | grep -E "pid ${h:-x}[ ,)]|process ${h:-x} |\(${h:-x}\)" | tail -n 2 | tr '\n' ' ')
+  extra=$(journalctl -b -u sufun-memguard -o cat 2>/dev/null | grep 'closing' | tail -n +$((before + 1)) | grep -v "pid ${h:-x}," | tr '\n' ' ')
   say "INFO memory test: closed by: ${who:-?}"
-  check memtest-biggest-firefox-closed test "$gone" = 1
-  check memtest-closed-by-guard bash -c '[[ -n $1 ]]' _ "$who"
-  check memtest-desktop-responsive bash -c '(( $1 < 5000 ))' _ "$max"
-  check memtest-kwin-untouched  bash -c '[[ $(pgrep -x kwin_wayland | head -n1) == "$1" ]]' _ "$kw"
-  check memtest-plasma-untouched bash -c '[[ $(pgrep -u "$2" -x plasmashell | head -n1) == "$1" ]]' _ "$ps" "$u"
-  check memtest-firefox-survives bash -c 'kill -0 "$1"' _ "$fx"
+  [[ -n $extra ]] && say "INFO memory test: other processes closed: $extra"
+  check memtest-test-page-closed      test "$gone" = 1
+  check memtest-it-was-the-biggest    bash -c '[[ -n $1 && $1 == "$2" ]]' _ "$h" "$bigp"
+  check memtest-closed-by-guard       bash -c '[[ -n $1 ]]' _ "$who"
+  check memtest-nothing-else-closed   test -z "$extra"
+  check memtest-desktop-responsive    bash -c '(( $1 < $2 ))' _ "$max" "$limit"
+  check memtest-kwin-untouched        bash -c '[[ $(pgrep -x kwin_wayland | head -n1) == "$1" ]]' _ "$kw"
+  check memtest-plasma-untouched      bash -c '[[ $(pgrep -u "$2" -x plasmashell | head -n1) == "$1" ]]' _ "$ps" "$u"
+  check memtest-firefox-survives      bash -c 'kill -0 "$1"' _ "$fx"
   pkill -u "$u" -x firefox; sleep 3; rm -f "$hog"
 }
 
@@ -586,8 +610,8 @@ case "$MODE" in
       check_system
       check_welcome sufun
       check_desktop_extras sufun
-      check_sensors sufun
       ram_report sufun
+      check_sensors sufun
       ram_details sufun
       installer_gui_test sufun
       check_firefox sufun
