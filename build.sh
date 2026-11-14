@@ -21,7 +21,8 @@ RELENG=/usr/share/archiso/configs/releng
 LOCALREPO=/var/tmp/sufun-repo         # path without spaces (pacman file:// URLs)
 VERSION="$(tr -d '[:space:]' < "$HERE/VERSION")"
 
-SURFACE_KEY=56C464BAAC421453
+# linux-surface package signing key: the FULL fingerprint (a short id could be imitated)
+SURFACE_KEY=87DEFA4AB94A99A4C8C3112556C464BAAC421453
 SURFACE_KEY_URL=https://raw.githubusercontent.com/linux-surface/linux-surface/master/pkg/keys/surface.asc
 SURFACE_REPO=$'\n[linux-surface]\nServer = https://pkg.surfacelinux.com/arch/\n'
 
@@ -39,6 +40,9 @@ mkdir -p "$WORK" "$OUT"
 log "Trusting the linux-surface signing key on the build host"
 curl -fsSL "$SURFACE_KEY_URL" -o "$WORK/surface.asc"
 pacman-key --init >/dev/null 2>&1 || true
+# The downloaded file must contain exactly that one key, nothing else
+got=$(gpg --batch --with-colons --show-keys "$WORK/surface.asc" 2>/dev/null | awk -F: '$1 == "pub" {n++; w=1} $1 == "fpr" && w {f = $10; w=0} END {print f " keys=" n}')
+[[ $got == "$SURFACE_KEY keys=1" ]] || die "the downloaded linux-surface key is not the expected one ($got)"
 pacman-key --add "$WORK/surface.asc"
 pacman-key --lsign-key "$SURFACE_KEY"
 
@@ -124,6 +128,8 @@ enable power-profiles-daemon.service multi-user.target.wants
 enable thermald.service              multi-user.target.wants
 enable earlyoom.service              multi-user.target.wants
 enable ananicy-cpp.service           multi-user.target.wants
+# Firewall in the live system too (see etc/systemd/system/ufw.service.d/10-sufun-live.conf)
+enable ufw.service                   multi-user.target.wants
 # Bluetooth: NOT started at boot. This alias lets it start on demand when the
 # Bluetooth applet asks for it over D-Bus.
 ln -sf /usr/lib/systemd/system/bluetooth.service "$SD/dbus-org.bluez.service"

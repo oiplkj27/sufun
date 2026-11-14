@@ -17,6 +17,11 @@
 #           WININSTALL partition (the dummy ISO's boot file + a test kernel option)
 #   Test 5: the installed system again: sufun-windows-restore --remove puts back
 #           the partition sizes and removes the entry
+# Security audit tests (docs/security-audit.md), in tests 1 and 3:
+#   - the host scans the VM's ports over a private scan network (portscan.sh)
+#   - test 3 gets a small "USB stick" with a .sufun update made by the real release
+#     tools and a throwaway key (make-security-media.sh, needs the packages tar as
+#     4th argument); the VM tries tampered/unsigned/old/wrong-key updates.
 # Success is read from the serial console ("SUFUN-TEST: ..." lines written by
 # sufun-selftest), not from fixed waiting times. Screenshots are saved every
 # 10 seconds for the first 3 minutes, then every minute (QEMU monitor
@@ -28,6 +33,7 @@
 set -uo pipefail
 
 ISO="$(realpath "${1:?iso}")"; WANT="${2:?version}"; OUT="${3:?output dir}"
+PKGTAR="${4:-}"; [[ -n $PKGTAR ]] && PKGTAR="$(realpath "$PKGTAR")"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 mkdir -p "$OUT"; OUT="$(realpath "$OUT")"
 cd "$OUT" || exit 1
@@ -53,8 +59,29 @@ SDCARD=(-device sdhci-pci,sd-spec-version=3 -drive id=sdimg,if=none,format=raw,f
 bash "$HERE/make-dummy-windows-iso.sh" "$ISO" "$LABEL" winiso.iso || { echo "could not make the dummy Windows ISO" >&2; exit 1; }
 
 fail=0
+# --- security tests: scan network + update test media. In GitHub Actions they
+#     must work (no silent skip); on a developer machine without sudo/nmap they
+#     are left out. ---
+SCANNIC=() SECUSB=()
+if command -v nmap >/dev/null && sudo -n true 2>/dev/null && bash "$HERE/portscan.sh" --setup; then
+  SCANNIC=(-netdev tap,id=n1,ifname=sufuntap,script=no,downscript=no -device virtio-net-pci,netdev=n1,mac=52:54:00:77:00:02)
+  trap 'bash "$HERE/portscan.sh" --teardown' EXIT
+elif [[ ${GITHUB_ACTIONS:-} == true ]]; then
+  echo "the port scan network could not be set up"; fail=1
+fi
+if [[ -n $PKGTAR ]] && bash "$HERE/make-security-media.sh" "$PKGTAR" "$OUT/sec.iso"; then
+  # as a USB stick: never an "internal disk" for the installer or the restore tool
+  SECUSB=(-device qemu-xhci,id=secxhci -drive if=none,id=secmedia,format=raw,readonly=on,file=sec.iso -device usb-storage,bus=secxhci.0,drive=secmedia)
+elif [[ ${GITHUB_ACTIONS:-} == true ]]; then
+  echo "the update test media could not be made"; fail=1
+fi
+
 run_vm 1-live 2400 'SUFUN-TEST: LIVE-DESKTOP-OK' 'SUFUN-TEST: LIVE-DESKTOP-TIMEOUT' \
-  -cdrom "$ISO" -kernel vmlinuz -initrd initrd.img -append "$LIVEOPTS sufun.test=live" || fail=1
+  -cdrom "$ISO" -kernel vmlinuz -initrd initrd.img -append "$LIVEOPTS sufun.test=live" "${SCANNIC[@]}" || fail=1
+check_serial 1-live || fail=1
+if (( ${#SCANNIC[@]} )); then
+  grep -q 'REACHED=1 OPEN_TCP=0 OPEN_UDP=0 ' 1-live-portscan.txt 2>/dev/null || { echo "live system: port scan found open ports or did not run"; fail=1; }
+fi
 
 run_vm 2-install 3600 'SUFUN-TEST: INSTALL-DONE' 'SUFUN-TEST: INSTALL-FAILED' \
   -cdrom "$ISO" -drive file=disk.qcow2,if=virtio,format=qcow2 "${SDCARD[@]}" \
@@ -67,10 +94,16 @@ if (( ! fail )); then
   # Boot from the virtual disk only, like a real start: firmware -> systemd-boot -> SUFUN.
   # Extra screenshots in the first 20 s catch the SUFUN boot splash (Plymouth),
   # and after LOGIN-START the SUFUN login splash (ksplash).
-  FAST_SHOTS=20 run_vm 3-installed 1200 'SUFUN-TEST: INSTALLED-DONE' 'SUFUN-TEST: NEVER' \
+  FAST_SHOTS=20 run_vm 3-installed 2400 'SUFUN-TEST: INSTALLED-DONE' 'SUFUN-TEST: NEVER' \
     -drive file=disk.qcow2,if=virtio,format=qcow2 \
-    -drive file=winiso.iso,media=cdrom,readonly=on || fail=1
+    -drive file=winiso.iso,media=cdrom,readonly=on "${SCANNIC[@]}" "${SECUSB[@]}" || fail=1
   check_serial 3-installed "$WANT" || fail=1
+  if (( ${#SCANNIC[@]} )); then
+    grep -q 'REACHED=1 OPEN_TCP=0 OPEN_UDP=0 ' 3-installed-portscan.txt 2>/dev/null || { echo "installed system: port scan found open ports or did not run"; fail=1; }
+  fi
+  if (( ${#SECUSB[@]} )); then
+    grep -q 'SUFUN-TEST: PASS update-newer-signed-passes' 3-installed-serial.log || { echo "update attack tests did not run"; fail=1; }
+  fi
   grep -q 'SUFUN-TEST: RESTORE-PREPARED' 3-installed-serial.log || { echo "Windows restore: prepare did not finish"; fail=1; }
 fi
 
@@ -86,6 +119,6 @@ if (( ! fail )); then
   check_serial 5-restore-cleanup || fail=1
 fi
 
-rm -f disk.qcow2 sdblank.img winiso.iso vmlinuz initrd.img ucode.img ./*.sock
+rm -f disk.qcow2 sdblank.img winiso.iso sec.iso vmlinuz initrd.img ucode.img ./*.sock
 (( fail )) && { echo "TESTS FAILED"; exit 1; }
 echo "ALL TESTS PASSED"

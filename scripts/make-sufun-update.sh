@@ -26,8 +26,10 @@ MIN=""; [[ -f $MINF ]] && MIN="$(tr -d '[:space:]' < "$MINF")"
 mapfile -t BUILD_ONLY < <(awk '{sub(/#.*/,"")} $2=="build-only"{print $1}' "$HERE/packages/aur.txt")
 
 sign() {  # detached binary signature, as pacman expects (<file>.sig)
-  gpg --batch --yes --pinentry-mode loopback --passphrase "${SUFUN_SIGNING_PASSPHRASE:-}" \
-      --detach-sign --output "$1.sig" "$1"
+  # The passphrase goes to gpg through a pipe (fd 3), never on the command line,
+  # where other programs on the same machine could read it (security audit G-4).
+  gpg --batch --yes --pinentry-mode loopback --passphrase-fd 3 \
+      --detach-sign --output "$1.sig" "$1" 3<<< "${SUFUN_SIGNING_PASSPHRASE:-}"
 }
 
 STAGE="$(mktemp -d)"; trap 'rm -rf "$STAGE"' EXIT

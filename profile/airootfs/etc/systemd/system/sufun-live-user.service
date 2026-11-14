@@ -5,7 +5,7 @@ ConditionPathExists=!/home/sufun
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/useradd -m -G wheel,video,audio,input -s /bin/bash -c "SUFUN" sufun
+ExecStart=/usr/bin/useradd -m -G wheel,video,audio -s /bin/bash -c "SUFUN" sufun
 ExecStart=/usr/bin/passwd -d sufun
 
 [Install]

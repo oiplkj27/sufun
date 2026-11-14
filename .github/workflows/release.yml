@@ -23,7 +23,9 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5
+        with:
+          persist-credentials: false   # the job token is not left in .git/config
       - name: Tag must match VERSION, release notes must exist
         run: |
           v=$(tr -d '[:space:]' < VERSION)
@@ -42,11 +44,13 @@ jobs:
     permissions:
       contents: write              # to create the GitHub Release
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5
+        with:
+          persist-credentials: false   # the job token is not left in .git/config
 
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131   # v7
         with: { name: sufun-iso, path: iso }
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131   # v7
         with: { name: sufun-packages, path: pkgtar }
       - name: Unpack packages
         run: mkdir -p packages && tar -xf pkgtar/sufun-packages.tar -C packages
@@ -62,7 +66,12 @@ jobs:
           # Also import the public key from the repo: it carries the newest expiry dates
           # and revocations, and must belong to the same key.
           gpg --batch --import keys/sufun.asc
+          # (prints key ids and dates only, never key material)
           gpg --list-secret-keys --keyid-format long
+          # The key in the secret must be the key in keys/sufun.asc, and it must be
+          # the signing SUBKEY only: the primary key stays offline ("sec#").
+          gpg --batch --with-colons --list-secret-keys | grep -q '^sec:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:#' \
+            || { echo "::error::the secret SUFUN_SIGNING_KEY contains the PRIMARY key. Upload only sufun-signing-subkey-for-github.asc"; exit 1; }
 
       - name: Make signed .sufun update file
         env:
@@ -81,8 +90,9 @@ jobs:
         run: |
           cd dist
           sha256sum -- * > "$RUNNER_TEMP/SHA256SUMS" && mv "$RUNNER_TEMP/SHA256SUMS" .
-          gpg --batch --yes --pinentry-mode loopback --passphrase "$SUFUN_SIGNING_PASSPHRASE" \
-              --armor --detach-sign --output SHA256SUMS.asc SHA256SUMS
+          # passphrase through a pipe, never on the command line
+          gpg --batch --yes --pinentry-mode loopback --passphrase-fd 3 \
+              --armor --detach-sign --output SHA256SUMS.asc SHA256SUMS 3<<< "$SUFUN_SIGNING_PASSPHRASE"
 
       - name: Publish GitHub Release
         env:

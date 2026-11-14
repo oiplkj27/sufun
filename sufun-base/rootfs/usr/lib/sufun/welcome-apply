@@ -21,26 +21,36 @@ else
     log "no choice was made (window closed, failed or timed out): settings unchanged"
     exit 0
   fi
-  L= Z= K=
-  for kv in $(head -c 512 "$CHOICE"); do
+  # The file comes from the unprivileged chooser user: it must be a plain file
+  # (never a link to some other file), only its first line is read, and nothing
+  # in it is expanded by the shell (security audit W-1).
+  if [[ -L $CHOICE || ! -f $CHOICE ]]; then
+    log "the choice is not a plain file: ignored, settings unchanged"
+    rm -f "$CHOICE"; exit 0
+  fi
+  L= Z= K= line=
+  IFS= read -r -n 512 line < "$CHOICE" || true
+  rm -f "$CHOICE"
+  set -f
+  for kv in $line; do
     case $kv in
       LANG=*) L=${kv#LANG=} ;;
       TZ=*)   Z=${kv#TZ=} ;;
       KB=*)   K=${kv#KB=} ;;
     esac
   done
-  rm -f "$CHOICE"
+  set +f
 fi
 
 # --- check everything against our own lists (never trust the window's text) ---
 lang_ok() { awk -F'\t' -v l="$1" '!/^#/ && $1 == l {f=1} END {exit !f}' "$DATA/languages.tsv"; }
 kb_line() { awk -F'\t' -v k="$1" '!/^#/ && $1 == k {print; exit}' "$DATA/keyboards.tsv"; }
-lang_ok "$L" || { log "refused language '$L'"; L=; }
+lang_ok "$L" || { log "refused language '${L:0:40}'"; L=; }
 if [[ ! $Z =~ ^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$ || ! -f /usr/share/zoneinfo/$Z || $Z == *..* ]]; then
-  log "refused time zone '$Z'"; Z=
+  log "refused time zone '${Z:0:40}'"; Z=
 fi
 KBL=$(kb_line "$K")
-[[ -n $KBL ]] || { log "refused keyboard '$K'"; K=; }
+[[ -n $KBL ]] || { log "refused keyboard '${K:0:40}'"; K=; }
 [[ -n $L || -n $Z || -n $K ]] || exit 0
 
 # --- language ---

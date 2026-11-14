@@ -1,6 +1,9 @@
 # Shared steps: build the ISO + our packages, then boot-test them in QEMU.
 # Called by build-iso.yml (every push to main) and release.yml (version tags).
 # This workflow never sees the signing key.
+# Security (docs/security-audit.md): every action is pinned to a full commit id,
+# the job token is read-only and not kept after checkout, and nothing here runs
+# for pull requests or forks (no pull_request / pull_request_target trigger).
 name: Build and test (shared)
 
 on:
@@ -10,7 +13,19 @@ permissions:
   contents: read
 
 jobs:
+  # Static security checks of the repository itself (workflows, test mode gates,
+  # Firefox policy, bundled uBlock file, no private keys...). Fast; runs first.
+  security-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5
+        with:
+          persist-credentials: false   # the job token is not left in .git/config
+      - name: Security lint
+        run: bash scripts/ci/security-lint.sh
+
   build:
+    needs: security-lint
     runs-on: ubuntu-latest
     container:
       image: archlinux:latest
@@ -22,7 +37,9 @@ jobs:
           rm -rf /host/usr/share/dotnet /host/usr/local/lib/android /host/opt/ghc /host/opt/hostedtoolcache /host/usr/local/share/boost
           df -h /
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5
+        with:
+          persist-credentials: false   # the job token is not left in .git/config
 
       - name: Install build tools
         run: pacman -Syu --noconfirm --needed archiso curl
@@ -31,7 +48,7 @@ jobs:
         run: bash ./build.sh
 
       - name: Upload ISO
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f   # v6
         with:
           name: sufun-iso
           path: out/*.iso
@@ -44,7 +61,7 @@ jobs:
         run: tar -cf out/sufun-packages.tar -C out/packages .
 
       - name: Upload packages (for the release job)
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f   # v6
         with:
           name: sufun-packages
           path: out/sufun-packages.tar
@@ -60,7 +77,9 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache /usr/local/share/boost
           df -h /
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5
+        with:
+          persist-credentials: false   # the job token is not left in .git/config
 
       - name: Enable KVM (hardware virtualization) if the runner has it
         run: |
@@ -76,22 +95,29 @@ jobs:
           for try in 1 2 3 4 5; do
             sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update &&
             sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y --no-install-recommends \
-              qemu-system-x86 qemu-utils ovmf xorriso python3 wimtools && exit 0
+              qemu-system-x86 qemu-utils ovmf xorriso python3 wimtools nmap dnsmasq-base gnupg && exit 0
             echo "apt failed (try $try), waiting 30 s"; sleep 30
           done
           exit 1
 
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131   # v7
         with:
           name: sufun-iso
           path: iso
 
-      - name: Boot and install test
-        run: bash scripts/ci/qemu-test.sh iso/*.iso "$(tr -d '[:space:]' < VERSION)" test-results
+      # For the update attack tests: a .sufun file made from this build's packages
+      # with a throwaway key (scripts/ci/make-security-media.sh)
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131   # v7
+        with:
+          name: sufun-packages
+          path: pkgtar
+
+      - name: Boot, install and security test
+        run: bash scripts/ci/qemu-test.sh iso/*.iso "$(tr -d '[:space:]' < VERSION)" test-results pkgtar/sufun-packages.tar
 
       - name: Upload screenshots and serial logs
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f   # v6
         with:
           name: sufun-test-results
           path: test-results/
@@ -104,9 +130,11 @@ jobs:
     needs: build
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5
+        with:
+          persist-credentials: false   # the job token is not left in .git/config
 
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131   # v7
         with:
           name: sufun-iso
           path: iso
@@ -131,7 +159,7 @@ jobs:
           exit $LASTEXITCODE
 
       - name: Upload the virtual internal disk and SD card
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f   # v6
         with:
           name: sufun-sd-test-disks
           path: |
@@ -157,7 +185,9 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache /usr/local/share/boost
           df -h /
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5
+        with:
+          persist-credentials: false   # the job token is not left in .git/config
 
       - name: Enable KVM (hardware virtualization) if the runner has it
         run: |
@@ -177,7 +207,7 @@ jobs:
           done
           exit 1
 
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131   # v7
         with:
           name: sufun-sd-test-disks
           path: sd-disks
@@ -187,7 +217,7 @@ jobs:
 
       - name: Upload screenshots and serial logs
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f   # v6
         with:
           name: sufun-test-results-sd
           path: test-results-sd/

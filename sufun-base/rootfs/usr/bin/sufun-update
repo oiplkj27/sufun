@@ -13,6 +13,9 @@
 #   3. every file matches SHA256SUMS, no extra files
 #   4. every package has its own good SUFUN signature (pacman checks it again)
 #   5. new version > installed version, installed version >= min_from
+# The file is copied ONCE into a private folder first; every check and the
+# installation use only that copy, so nobody can swap the file between "checked"
+# and "installed" (security audit U-1).
 # Options: --yes (no question), --check (only verify and print the manifest), --gui (messages for sufun-update-gui)
 set -uo pipefail
 
@@ -21,19 +24,21 @@ TRUSTED=/usr/share/sufun/keys/trusted
 LOG=/var/log/sufun-update.log
 
 YES=0 CHECK=0 GUI=0 FILE=
-for a in "$@"; do
-  case "$a" in
-    --yes) YES=1 ;; --check) CHECK=1 ;; --gui) GUI=1 ;;
-    -h|--help) sed -n '2,4p' "$0"; exit 0 ;;
-    *) FILE="$a" ;;
-  esac
-done
-
 fail() {  # Korean message for people, prefixed line for the GUI
   printf '\e[1;31m오류: %s\e[0m\n' "$1" >&2
   [[ $GUI == 1 ]] && printf 'SUFUN-ERROR: %s\n' "$1"
   exit 1
 }
+for a in "$@"; do [[ $a == --gui ]] && GUI=1; done
+for a in "$@"; do
+  case "$a" in
+    --yes) YES=1 ;; --check) CHECK=1 ;; --gui) GUI=1 ;;
+    -h|--help) sed -n '2,4p' "$0"; exit 0 ;;
+    -*) fail "알 수 없는 옵션입니다: $a" ;;      # never handed to tar/pacman as a file name
+    *) [[ -z $FILE ]] || fail "업데이트 파일은 하나만 지정하세요."
+       FILE="$a" ;;
+  esac
+done
 info() { printf '\e[1;36m==> %s\e[0m\n' "$*"; }
 
 [[ -n $FILE ]] || fail "업데이트 파일을 지정하세요. 예: sudo sufun-update sufun-update-1.1.sufun"
@@ -49,18 +54,28 @@ cleanup() { rm -rf "$WORK"; rm -f /var/lib/pacman/sync/sufun-update.db; }
 trap cleanup EXIT
 BAD="이 파일은 손상되었거나 SUFUN 업데이트 파일이 아닙니다. 설치하지 않습니다."
 
+# --- 0. private copy: from here on the user's file is never read again ---
+SRC="$WORK/update.sufun"
+cp --no-preserve=all -- "$FILE" "$SRC" 2>/dev/null || fail "$BAD"
+[[ -f $SRC && ! -L $SRC ]] || fail "$BAD"
+X="$WORK/x"; mkdir "$X" || fail "$BAD"
+# --force-local: a ":" in a file name never means "another computer" to tar
+TAR=(tar --force-local)
+
 # --- 1. file names and types (before extracting anything) ---
 NAME_RE='^(manifest|notes\.ko\.txt|SHA256SUMS|SHA256SUMS\.sig|packages/|packages/[A-Za-z0-9@._+-]+\.pkg\.tar\.zst(\.sig)?)$'
-listing=$(tar -tf "$FILE" 2>/dev/null) || fail "$BAD"
+listing=$("${TAR[@]}" -tf "$SRC" 2>/dev/null) || fail "$BAD"
 [[ -n $listing ]] || fail "$BAD"
 while IFS= read -r n; do
   n=${n#./}
   [[ -z $n || $n =~ $NAME_RE ]] || fail "$BAD (예상하지 못한 파일: $n)"
 done <<< "$listing"
 # Only regular files and directories (no links, devices...)
-tar -tvf "$FILE" 2>/dev/null | cut -c1 | grep -qv '^[-d]$' && fail "$BAD (링크 또는 특수 파일 포함)"
-tar -xf "$FILE" -C "$WORK" --no-same-owner --no-same-permissions 2>/dev/null || fail "$BAD"
-cd "$WORK" || fail "$BAD"
+"${TAR[@]}" -tvf "$SRC" 2>/dev/null | cut -c1 | grep -qv '^[-d]$' && fail "$BAD (링크 또는 특수 파일 포함)"
+"${TAR[@]}" -xf "$SRC" -C "$X" --no-same-owner --no-same-permissions 2>/dev/null || fail "$BAD"
+# ...and checked again on what was really unpacked
+[[ -z $(find "$X" -mindepth 1 ! -type f ! -type d -print -quit) ]] || fail "$BAD (링크 또는 특수 파일 포함)"
+cd "$X" || fail "$BAD"
 for f in manifest notes.ko.txt SHA256SUMS SHA256SUMS.sig; do [[ -f $f ]] || fail "$BAD ($f 없음)"; done
 
 # --- 2. signature of SHA256SUMS ---
@@ -138,7 +153,7 @@ curl -fsI --max-time 15 https://archlinux.org >/dev/null 2>&1 \
 repo-add -q packages/sufun-update.db.tar.gz "${pkgs[@]}" || fail "임시 저장소를 만들 수 없습니다."
 CONF="$WORK/pacman.conf"
 cp /etc/pacman.conf "$CONF"
-printf '\n[sufun-update]\nSigLevel = PackageRequired DatabaseNever\nServer = file://%s/packages\n' "$WORK" >> "$CONF"
+printf '\n[sufun-update]\nSigLevel = PackageRequired DatabaseNever\nServer = file://%s/packages\n' "$X" >> "$CONF"
 
 info "업데이트 설치 중 (Timeshift 백업을 먼저 만듭니다)..."
 { echo "=== $(date -Is) sufun-update $CUR -> $NEW"; } >> "$LOG"

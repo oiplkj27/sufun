@@ -19,7 +19,7 @@
 FCITX=/usr/share/applications/org.fcitx.Fcitx5.desktop
 OSK=/usr/share/applications/org.kde.plasma.keyboard.desktop
 LOCK="${XDG_CONFIG_HOME:-$HOME/.config}/sufun/rotation-lock"
-STATE="${XDG_RUNTIME_DIR:-/tmp}/sufun-tablet-mode"
+STATE="${XDG_RUNTIME_DIR:-/run/user/$UID}/sufun-tablet-mode"   # never a shared folder like /tmp
 last=""
 osk_primed=0
 

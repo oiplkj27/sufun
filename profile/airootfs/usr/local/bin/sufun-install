@@ -26,7 +26,7 @@ set -euo pipefail
 [[ $EUID -eq 0 ]] || exec sudo "$0" "$@"
 
 SHARE=/usr/share/sufun-iso
-SURFACE_KEY=56C464BAAC421453
+SURFACE_KEY=87DEFA4AB94A99A4C8C3112556C464BAAC421453     # full fingerprint
 # btrfs options: noatime = don't write on every file read; zstd:1 = fast compression
 BTRFS_OPTS=noatime,compress=zstd:1
 MIN_ROOT_GIB=10      # smallest SUFUN root partition on the card (system ≈ 5 GB + backups)
@@ -535,13 +535,13 @@ fi
 bold "패키지 저장소 설정 중"
 pacman-key --add "$SHARE/surface.asc"
 pacman-key --lsign-key "$SURFACE_KEY"
-TARGET_CONF=/tmp/sufun-pacman.conf         # becomes the installed system's pacman.conf
+TARGET_CONF=$(mktemp --suffix=.conf /tmp/sufun-pacman.XXXXXX)   # becomes the installed system's pacman.conf
 cp /etc/pacman.conf "$TARGET_CONF"
 sed -i 's/^#ParallelDownloads/ParallelDownloads/' "$TARGET_CONF"
 sed -i '/^#\[multilib\]/{s/^#//;n;s/^#//}' "$TARGET_CONF"          # Steam needs [multilib]
 grep -q '^\[linux-surface\]' "$TARGET_CONF" || printf '\n[linux-surface]\nServer = https://pkg.surfacelinux.com/arch/\n' >> "$TARGET_CONF"
 # Install-time only: our local repo on the live medium (sufun-base, fonts, theme...)
-INSTALL_CONF=/tmp/sufun-pacman-install.conf
+INSTALL_CONF=$(mktemp --suffix=.conf /tmp/sufun-pacman-install.XXXXXX)
 cp "$TARGET_CONF" "$INSTALL_CONF"
 printf '\n[sufun-local]\nSigLevel = Optional TrustAll\nServer = file://%s/repo\n' "$SHARE" >> "$INSTALL_CONF"
 
@@ -558,7 +558,7 @@ PACSTRAP_OPTS=()
 pacstrap -C "$INSTALL_CONF" /mnt "${PKGS[@]}" sufun-base "${PACSTRAP_OPTS[@]}" \
   || { warn "다운로드가 실패했습니다. 한 번 더 시도합니다..."; sleep 10
        pacstrap -C "$INSTALL_CONF" /mnt "${PKGS[@]}" sufun-base "${PACSTRAP_OPTS[@]}"; }
-cp "$TARGET_CONF" /mnt/etc/pacman.conf
+install -m 644 "$TARGET_CONF" /mnt/etc/pacman.conf
 
 # fstab: genfstab writes "subvolid=..."; after a Timeshift restore "@" gets a NEW
 # id, and a subvolid entry would then stop the system from booting. Keep only the
@@ -669,7 +669,10 @@ if [[ $MODE == sd ]]; then hwclock --systohc --localtime; else hwclock --systohc
 locale-gen
 echo "$HOST_NAME" > /etc/hostname
 printf '127.0.0.1 localhost\n::1 localhost\n127.0.1.1 %s\n' "$HOST_NAME" > /etc/hosts
-useradd -m -G wheel,video,audio,input -s /bin/bash "$USER_NAME"
+# Not in the "input" group: its members can read every key press of every user,
+# also the passwords typed at the login and lock screen (security audit I-1).
+# The desktop gets the keyboard, touchpad and touch screen through logind.
+useradd -m -G wheel,video,audio -s /bin/bash "$USER_NAME"
 echo '%wheel ALL=(ALL:ALL) ALL' > /etc/sudoers.d/10-wheel
 chmod 440 /etc/sudoers.d/10-wheel
 passwd -l root
@@ -740,6 +743,8 @@ else
   else
     printf 'default sufun-sd.conf\ntimeout 4\nconsole-mode keep\neditor no\n' > "$LC"
   fi
+  # No editing of kernel options in the boot menu (e.g. "init=/bin/sh")
+  if grep -q '^editor' "$LC"; then sed -i 's/^editor.*/editor no/' "$LC"; else echo 'editor no' >> "$LC"; fi
   sed -i 's/^title .*/title   SUFUN Live (microSD, rescue)/' /mnt/efi/loader/entries/sufun-live.conf
   for f in vmlinuz-linux-surface initramfs-linux-surface.img; do
     cmp -s "/mnt/boot/$f" "/mnt/efi/EFI/SUFUN/sd/$f" || die "부팅 파일 $f 이(가) 내부 저장장치에 복사되지 않았습니다."

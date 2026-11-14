@@ -434,7 +434,9 @@ if ($case -eq 'a') {
     Warn "    카드(디스크 $($card.Number), $(Fmt-GB $card.Size))의 모든 데이터가 지워집니다."
     Say  "    앞부분 $([Math]::Round($liveMB / 1024, 1)) GB = SUFUN 라이브 ($($fs.ToUpper()), 이름 $LiveLabel), 나머지 = 빈 공간 (나중에 'SD카드에 설치' 용)"
     Ask-Word 'YES' '    이 카드를 포맷하려면 YES 를 입력하세요'
-    $dp = Join-Path $env:TEMP 'sufun-diskpart.txt'
+    # A new, unguessable file name in Windows' own Temp folder (not the user's %TEMP%): no other
+    # program can prepare or swap the command file that diskpart runs as administrator.
+    $dp = Join-Path (Join-Path $env:SystemRoot 'Temp') ("sufun-diskpart-{0}.txt" -f [guid]::NewGuid().ToString('N'))
     Set-Content -LiteralPath $dp -Encoding ASCII -Value @(
         "select disk $($card.Number)", 'clean', 'convert mbr',
         "create partition primary size=$liveMB", "format quick fs=$fs label=$LiveLabel", 'assign')

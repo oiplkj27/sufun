@@ -31,9 +31,11 @@ PY
 # FAST_SHOTS=<seconds> run_vm ...: screenshots about every 2 s for that long first
 # Also about every 2 s for 40 s after the VM prints "SUFUN-TEST: LOGIN-START"
 # (the installed-system test logging in: the SUFUN login splash appears then).
+# When the VM prints "SUFUN-TEST: PORTSCAN-READY" (it has the scan network card,
+# see portscan.sh), the host scans it with nmap in the background.
 run_vm() {
   local name=$1 timeout=$(( $2 * F )) ok=$3 bad=$4; shift 4
-  local fast=${FAST_SHOTS:-0} next_shot=10 burst=0 named=0 n label
+  local fast=${FAST_SHOTS:-0} next_shot=10 burst=0 named=0 n label scanned=0
   (( fast > 0 )) && next_shot=2
   local log="$name-serial.log" sock="$OUT/$name.sock" el start=$SECONDS result=TIMEOUT
   : > "$log"
@@ -50,6 +52,9 @@ run_vm() {
     el=$((SECONDS - start))
     if (( burst == 0 )) && grep -q 'SUFUN-TEST: LOGIN-START' "$log"; then
       burst=$((el + 40)); next_shot=$el
+    fi
+    if (( scanned == 0 )) && grep -q 'SUFUN-TEST: PORTSCAN-READY' "$log"; then
+      scanned=1; bash "$HERE/portscan.sh" "$name" &
     fi
     if (( el < fast || el < burst )); then sleep 1; else sleep 2; fi
     # "SUFUN-TEST: SHOT <label>": the VM asks for a screenshot now, saved as
@@ -77,6 +82,7 @@ run_vm() {
   # Installer and installed-system tests power off by themselves; give them a moment.
   for _ in 1 2 3 4 5 6; do kill -0 $pid 2>/dev/null || break; sleep 5; done
   kill $pid 2>/dev/null; wait $pid 2>/dev/null
+  (( scanned )) && pkill -f "http.server 8099" 2>/dev/null
   grep -q 'SUFUN-TEST' "$log" && grep 'SUFUN-TEST' "$log" | sed "s/^/   [$name] /"
   echo "== $name: $result"
   [[ $result == OK ]]

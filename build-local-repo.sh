@@ -27,6 +27,9 @@ pacman -S --needed --noconfirm base-devel
 id "$BUILDER" &>/dev/null || useradd -m "$BUILDER"
 echo "$BUILDER ALL=(ALL) NOPASSWD: /usr/bin/pacman" > /etc/sudoers.d/90-sufunbuild
 chmod 440 /etc/sudoers.d/90-sufunbuild
+# Only while this script runs: on your own WSL Arch the build user must not keep
+# password-less pacman (= root) afterwards (security audit B-2).
+trap 'rm -f /etc/sudoers.d/90-sufunbuild' EXIT
 rm -rf "$BUILD_DIR" "$REPO"
 mkdir -p "$BUILD_DIR" "$REPO"
 chown "$BUILDER:" "$BUILD_DIR"

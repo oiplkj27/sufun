@@ -15,6 +15,9 @@ MODE=$(sed -n 's/.*sufun\.test=\([a-z]*\).*/\1/p' /proc/cmdline)
 # Tool output in English, whatever language the first-start chooser picked
 export LC_ALL=C.UTF-8
 [[ -n $MODE ]] || exit 0
+# The test mode exists only in the CI virtual machine: on a real computer this
+# script does nothing, whatever the kernel command line says (security audit T-1).
+[[ $(cat /sys/class/dmi/id/sys_vendor 2>/dev/null) == QEMU ]] || exit 0
 say() { echo "SUFUN-TEST: $*" > /dev/ttyS0; echo "SUFUN-TEST: $*"; }
 # The serial login prompt (agetty) hangs up /dev/ttyS0 when it starts; a program
 # still writing to the old ttyS0 then gets write errors and stops. So: wait for
@@ -534,6 +537,231 @@ sd_checks() {
 #  phase 2 (next start, sufun.test=winsetup): the firmware started the dummy ISO's
 #           boot file from the WININSTALL partition -> WINSETUP-BOOT-OK
 #  phase 3 (start after that, installed system): --remove, everything back
+# ===================== security audit regression tests (docs/security-audit.md) =====================
+# The VM attacks itself (and the CI host scans it); every attack must fail.
+SEC_HOST=10.77.0.1 SEC_ME=10.77.0.2 SEC_MAC=52:54:00:77:00:02
+
+# expect <check-name> <ok|refused> <text that must be in the output> <command...>
+# "refused" = the command must fail AND say why (so a refusal for the wrong reason is a FAIL).
+expect() {
+  local name=$1 want=$2 needle=$3 out rc; shift 3
+  out=$("$@" 2>&1 </dev/null); rc=$?
+  if { [[ $want == ok && $rc -eq 0 ]] || [[ $want == refused && $rc -ne 0 ]]; } && [[ $out == *"$needle"* ]]; then
+    say "PASS $name"
+  else
+    say "FAIL $name (exit $rc, wanted $want with '$needle': $(tail -n 2 <<< "$out" | tr '\n' ' ' | cut -c1-220))"
+  fi
+}
+
+# --- port scan from the CI host (qemu-test.sh attaches a second network card for it) ---
+host_portscan() {
+  local ifc= i res=
+  for i in /sys/class/net/*; do [[ $(cat "$i/address" 2>/dev/null) == "$SEC_MAC" ]] && ifc=${i##*/}; done
+  say "INFO listening sockets (ss -tuln): $(ss -Htuln 2>/dev/null | awk '{print $1 "/" $5}' | sort -u | tr '\n' ' ')"
+  # Nothing may listen for TCP connections from the network (loopback only is fine)
+  check no-tcp-listener-on-network bash -c '! ss -Htln | awk "{print \$4}" | grep -vE "^(127\.|\[::1\]|\[::ffff:127\.)"'
+  [[ -n $ifc ]] || { say "INFO portscan: no scan network card in this test"; return 0; }
+  for ((i = 0; i < 40; i++)); do ip -4 addr show dev "$ifc" | grep -q "inet $SEC_ME/" && break; sleep 1; done
+  if ! ip -4 addr show dev "$ifc" | grep -q "inet $SEC_ME/"; then
+    nmcli device set "$ifc" managed no >/dev/null 2>&1
+    ip link set "$ifc" up; ip addr add "$SEC_ME/24" dev "$ifc"
+    say "INFO portscan: no DHCP address on $ifc, set $SEC_ME by hand"
+  fi
+  say "PORTSCAN-READY $SEC_ME"        # the host starts nmap now and then serves its result
+  for ((i = 0; i < 120; i++)); do
+    res=$(curl -fsS --max-time 3 "http://$SEC_HOST:8099/result" 2>/dev/null) && break
+    sleep 3
+  done
+  say "INFO portscan from the host: ${res:-no answer from the host}"
+  check portscan-host-reached-vm   bash -c '[[ $1 == *"REACHED=1 "* ]]' _ "$res"
+  check portscan-no-open-tcp-port  bash -c '[[ $1 == *"OPEN_TCP=0 "* ]]' _ "$res"
+  check portscan-no-open-udp-port  bash -c '[[ $1 == *"OPEN_UDP=0 "* ]]' _ "$res"
+}
+
+# --- checks for the live system AND installed systems ---
+security_common() {  # security_common <user>
+  local u=$1 decoy out
+  check cpu-mitigations-on        bash -c '! grep -qw "mitigations=off" /proc/cmdline'
+  check firefox-security-untouched bash -c '! grep -qiE "fission|security\.sandbox|xpinstall\.signatures|security\.tls|cert_pinning|DisableSecurityBypass|\"locked\"" /etc/firefox/policies/policies.json'
+  check ublock-file-mozilla-signed bash -c 'bsdtar -tf /usr/share/sufun/firefox/uBlock0@raymondhill.net.xpi | grep -qx META-INF/mozilla.rsa && bsdtar -tf /usr/share/sufun/firefox/uBlock0@raymondhill.net.xpi | grep -qx META-INF/cose.sig'
+  check no-ssh-server             bash -c '! systemctl is-active -q sshd && ! pgrep -x sshd'
+  check firewall-default-deny     bash -c 'ufw status verbose | grep -q "deny (incoming)"'
+  # Programs that run as root must not be changeable by a normal user
+  out=$(find /usr/lib/sufun /usr/bin/sufun-* /usr/share/sufun /usr/lib/systemd/system/sufun-* /usr/lib/systemd/system-sleep \
+          /usr/share/polkit-1/rules.d/50-sufun-typecover.rules /usr/share/libalpm/hooks /usr/local/bin \
+          ! -type l \( ! -user root -o -perm /022 \) 2>/dev/null | head -n 5 | tr '\n' ' ')
+  if [[ -z $out ]]; then say "PASS root-programs-not-user-writable"; else say "FAIL root-programs-not-user-writable ($out)"; fi
+  out=$(find /usr/lib/sufun /usr/share/sufun /usr/local /etc -xdev -type f -perm /6000 2>/dev/null | head -n 5 | tr '\n' ' ')
+  if [[ -z $out ]]; then say "PASS no-setuid-file-from-sufun"; else say "FAIL no-setuid-file-from-sufun ($out)"; fi
+  local suid; suid=$(find / -xdev -type f -perm /6000 -printf '%u %m %p\n' 2>/dev/null)
+  # owner root, and not writable by group or others (last two digits of the mode)
+  out=$(awk '$1 != "root" || $2 ~ /[2367].$/ || $2 ~ /[2367]$/ {print $3}' <<< "$suid" | head -n 5 | tr '\n' ' ')
+  if [[ -z $out ]]; then say "PASS setuid-files-root-owned"; else say "FAIL setuid-files-root-owned ($out)"; fi
+  say "INFO setuid/setgid programs: $(awk '{print $3}' <<< "$suid" | sed 's|.*/||' | sort | tr '\n' ' ')"
+  say "INFO kernel hardening: ptrace_scope=$(sysctl -n kernel.yama.ptrace_scope 2>/dev/null) kptr_restrict=$(sysctl -n kernel.kptr_restrict 2>/dev/null) dmesg_restrict=$(sysctl -n kernel.dmesg_restrict 2>/dev/null) unprivileged_bpf_disabled=$(sysctl -n kernel.unprivileged_bpf_disabled 2>/dev/null) protected_symlinks=$(sysctl -n fs.protected_symlinks 2>/dev/null)"
+  # The memory guard must not be steered by a process NAME: a normal user's
+  # program that calls itself "Web Content" is not a Firefox tab (audit M-1).
+  if ! pgrep -u "$u" -x firefox >/dev/null; then
+    runuser -u "$u" -- bash -c 'printf "Web Content" > /proc/$$/comm; sleep 20; true' &
+    sleep 2
+    decoy=$(pgrep -u "$u" -x 'Web Content' | head -n1)
+    out=$(/usr/lib/sufun/memguard --pick)
+    say "INFO memguard --pick with a fake 'Web Content' process (pid ${decoy:-?}): '${out}'"
+    check memguard-ignores-fake-tab bash -c '[[ -n $1 && -z $2 ]]' _ "$decoy" "$out"
+    pkill -u "$u" -x 'Web Content'
+  fi
+  # The first-start chooser's answer is data: links and shell tricks are refused (audit W-1)
+  local before made=0; before=$(cat /etc/locale.conf /etc/vconsole.conf 2>/dev/null | sha256sum)
+  [[ -d /run/sufun-welcome ]] || { mkdir -p /run/sufun-welcome; made=1; }
+  ln -sfn /etc/shadow /run/sufun-welcome/choice
+  expect welcome-refuses-link ok "not a plain file" /usr/lib/sufun/welcome-apply
+  printf 'LANG=ko_KR.UTF-8;touch${IFS}/run/sufun-pwned TZ=../../etc/shadow KB=$(touch${IFS}/run/sufun-pwned) * LANG=`id`\n' > /run/sufun-welcome/choice
+  out=$(/usr/lib/sufun/welcome-apply 2>&1)
+  check welcome-refuses-injection bash -c '[[ $1 == *"refused language"* && $1 == *"refused time zone"* && $1 == *"refused keyboard"* && ! -e /run/sufun-pwned ]]' _ "$out"
+  check welcome-settings-unchanged bash -c '[[ $(cat /etc/locale.conf /etc/vconsole.conf 2>/dev/null | sha256sum) == "$1" ]]' _ "$before"
+  rm -f /run/sufun-welcome/choice
+  (( made )) && rmdir /run/sufun-welcome
+  return 0
+}
+
+# --- live system only ---
+security_live() {  # security_live <user>
+  # The installer's automatic test mode needs its own kernel option
+  # (sufun.test=install/sdinstall); this boot has sufun.test=live, so it must refuse.
+  expect installer-test-mode-refused refused "Test mode refused" env SUFUN_AUTO=1 SUFUN_MODE=emmc SUFUN_USER=x SUFUN_PASS=x /usr/local/bin/sufun-install
+  security_common "$1"
+}
+
+# --- installed system: accounts, passwords, becoming root ---
+security_accounts() {   # before the test logs in (no desktop needed)
+  check root-account-locked       bash -c '[[ $(passwd -S root | awk "{print \$2}") == L ]]'
+  check no-empty-password         bash -c '! awk -F: "\$2 == \"\" {f=1} END {exit !f}" /etc/shadow'
+  check no-live-user              bash -c '! id sufun'
+  check sudo-always-asks-password bash -c '! grep -rIs NOPASSWD /etc/sudoers /etc/sudoers.d'
+  check sddm-no-autologin         bash -c '! grep -rIshE "^User=.+" /etc/sddm.conf /etc/sddm.conf.d /usr/lib/sddm/sddm.conf.d'
+  check boot-menu-editor-off      bash -c 'grep -qx "editor no" /boot/loader/loader.conf 2>/dev/null || grep -qx "editor no" /efi/loader/loader.conf'
+  check boot-partition-root-only  bash -c '[[ $(stat -c %a /efi 2>/dev/null) == 700 || $(stat -c %a /boot) == 700 ]]'
+  check user-not-in-input-group   bash -c '! id -nG tester | grep -qw input'
+  check lock-screen-on            bash -c 'grep -qx "Autolock=true" /etc/xdg/kscreenlockerrc && grep -qx "LockOnResume=true" /etc/xdg/kscreenlockerrc'
+}
+security_installed() {  # security_installed <user>: the user is logged in (active local session)
+  local u=$1 p pk
+  security_common "$u"
+  # As the normal user, without the password: no way to root
+  check user-sudo-needs-password   bash -c '! runuser -u "$1" -- sudo -n true' _ "$u"
+  check user-pkexec-needs-password bash -c '! runuser -u "$1" -- pkexec --disable-internal-agent /usr/bin/true' _ "$u"
+  check user-cannot-start-units    bash -c '! runuser -u "$1" -- systemctl --no-ask-password start sufun-kmemwatch.service' _ "$u"
+  check user-cannot-write-system   bash -c '! runuser -u "$1" -- bash -c "touch /etc/x /usr/lib/sufun/x /boot/x /efi/x /var/lib/sufun/x /run/sufun/x" 2>/dev/null; ! ls /etc/x /usr/lib/sufun/x /boot/x /efi/x /var/lib/sufun/x /run/sufun/x 2>/dev/null | grep -q .' _ "$u"
+  # polkit: for the logged-in user only ONE thing is allowed without a password
+  # (re-probing the Type Cover touchpad); everything else asks.
+  p=$(pgrep -u "$u" -x plasmashell | head -n1)
+  pk() { pkcheck --action-id "$1" --process "$p" "${@:2}"; }
+  if [[ -n $p ]]; then
+    check polkit-touchpad-reprobe-allowed  pk org.freedesktop.systemd1.manage-units --detail unit sufun-typecover-rebind.service --detail verb start
+    check polkit-other-unit-asks-password  bash -c '! pkcheck --action-id org.freedesktop.systemd1.manage-units --process "$1" --detail unit sufun-kmemwatch.service --detail verb start' _ "$p"
+    check polkit-other-verb-asks-password  bash -c '! pkcheck --action-id org.freedesktop.systemd1.manage-units --process "$1" --detail unit sufun-typecover-rebind.service --detail verb stop' _ "$p"
+    check polkit-update-asks-password      bash -c '! pkcheck --action-id org.sufun.update --process "$1"' _ "$p"
+    check polkit-restore-asks-password     bash -c '! pkcheck --action-id org.sufun.windows-restore --process "$1"' _ "$p"
+  else
+    say "FAIL polkit-checks (no plasmashell of $u)"
+  fi
+  update_attack_tests "$u"
+}
+
+# --- .sufun update files: tampered, unsigned, old, wrong key (test media made by
+#     scripts/ci/make-security-media.sh with a THROWAWAY key; never the real SUFUN key) ---
+update_attack_tests() {  # update_attack_tests <user>
+  local u=$1 dev m w real cur tfpr afpr f pkg
+  dev=$(lsblk -pnro NAME,LABEL | awk '$2 == "SUFUNSEC" {print $1; exit}')
+  [[ -n $dev ]] || { say "INFO update attack tests: no test media in this test"; return 0; }
+  m=$(mktemp -d); w=$(mktemp -d /var/tmp/sufun-sec.XXXXXX); chmod 755 "$m" "$w"
+  mount -o ro "$dev" "$m" || { say "FAIL update-test-media"; return 0; }
+  real=$(ls "$m"/*.sufun 2>/dev/null | head -n1)
+  [[ -f $real ]] || { say "FAIL update-test-media (no .sufun file)"; umount "$m"; return 0; }
+  cur=$(pacman -Q sufun-base | awk '{print $2}' | sed 's/-[0-9]*$//')
+  say "INFO update attack tests with $(basename "$real") ($(du -h "$real" | cut -f1)), installed version $cur"
+
+  # 1. With the system's own keyring (test builds: no key at all; releases: the real
+  #    SUFUN key) a file signed by ANOTHER key is refused.
+  expect update-other-key-refused refused "" sufun-update --check "$real"
+
+  # From here: the throwaway key is "the SUFUN key" (bind mount, this test VM only)
+  export GNUPGHOME="$w/gnupg"; mkdir -p "$GNUPGHOME"; chmod 700 "$GNUPGHOME"
+  gpg --batch --quiet --import "$m/test-SECRET-throwaway.asc" >/dev/null 2>&1
+  tfpr=$(gpg --batch --with-colons --show-keys "$m/test-public.asc" 2>/dev/null | awk -F: '$1=="pub"{w=1} $1=="fpr"&&w{print $10; exit}')
+  gpg --batch --passphrase '' --pinentry-mode loopback --quick-gen-key "attacker" ed25519 sign never >/dev/null 2>&1
+  afpr=$(gpg --batch --with-colons --list-secret-keys attacker 2>/dev/null | awk -F: '$1=="fpr"{print $10; exit}')
+  mkdir "$w/keys"
+  gpg --dearmor < "$m/test-public.asc" > "$w/keys/sufun-release.gpg"       # like the sufun-keyring package
+  gpg --batch --export "$afpr" >> "$w/keys/sufun-release.gpg"              # attacker's key is KNOWN but not trusted
+  echo "$tfpr:4:" > "$w/keys/trusted"
+  chmod -R a+rX "$w/keys"
+  [[ -n $tfpr && -n $afpr ]] || say "FAIL update-test-keys (trusted '$tfpr', attacker '$afpr')"
+  mount --bind "$w/keys" /usr/share/sufun/keys
+
+  local ALL=(manifest notes.ko.txt SHA256SUMS SHA256SUMS.sig packages)
+  unpack() { rm -rf "$w/x"; mkdir "$w/x"; tar -xf "$real" -C "$w/x"; }
+  pack()   { ( cd "$w/x" && tar --owner=0 --group=0 -cf "$w/$1" "${@:2}" ); }
+  resum()  { ( cd "$w/x" && find . -type f ! -name 'SHA256SUMS*' | sed 's|^\./||' | LC_ALL=C sort | xargs sha256sum > SHA256SUMS ); }
+  sign()   { gpg --batch --yes --pinentry-mode loopback --passphrase '' -u "$1" --detach-sign --output "$w/x/$2.sig" "$w/x/$2" 2>/dev/null; }
+  setver() { sed -i -e "s/^version=.*/version=$1/" -e "s/^min_from=.*/min_from=${2:-}/" "$w/x/manifest"; }
+  fakebase() {  # a tiny "sufun-base 99" package signed with key $1
+    rm -f "$w"/x/packages/sufun-base-*; rm -rf "$w/p"; mkdir "$w/p"
+    printf 'pkgname = sufun-base\npkgbase = sufun-base\npkgver = 99-1\npkgdesc = security test\nurl = https://example.invalid\nbuilddate = 1\npackager = test\nsize = 0\narch = any\n' > "$w/p/.PKGINFO"
+    bsdtar -C "$w/p" -cf - .PKGINFO | zstd -q > "$w/x/packages/sufun-base-99-1-any.pkg.tar.zst"
+    sign "$1" packages/sufun-base-99-1-any.pkg.tar.zst
+  }
+
+  # 2. The real file (made by the release tools) passes signature + checksums ...
+  expect update-real-file-verifies      ok "version=$cur" sufun-update --check "$real"
+  expect update-user-can-check          ok "version=$cur" runuser -u "$u" -- sufun-update --check "$real"
+  # ... but it is the version already installed: replaying an old update is refused
+  expect update-old-version-refused     refused "되돌릴 수 없습니다" sufun-update --yes "$real"
+  # 3. A normal user can never install, not even a good file
+  expect update-user-cannot-install     refused "관리자 권한" runuser -u "$u" -- sufun-update --yes "$real"
+  check  update-user-pkexec-needs-password bash -c '! runuser -u "$1" -- pkexec --disable-internal-agent /usr/bin/sufun-update --yes "$2"' _ "$u" "$real"
+  # 4. One byte added to a package
+  unpack; pkg=$(ls "$w"/x/packages/*.pkg.tar.zst | head -n1); echo x >> "$pkg"; pack tamper-pkg.sufun "${ALL[@]}"
+  expect update-tampered-package-refused refused "체크섬" sufun-update --yes "$w/tamper-pkg.sufun"
+  # 5. Version number raised without the key
+  unpack; setver 99; pack tamper-manifest.sufun "${ALL[@]}"
+  expect update-tampered-version-refused refused "체크섬" sufun-update --yes "$w/tamper-manifest.sufun"
+  # 6. Everything re-made and signed by the attacker's own key
+  unpack; setver 99; fakebase "$afpr"; resum; sign "$afpr" SHA256SUMS; pack attacker.sufun "${ALL[@]}"
+  expect update-attacker-key-refused    refused "서명이 올바르지" sufun-update --yes "$w/attacker.sufun"
+  # 7. No signature at all
+  unpack; setver 99; resum; rm -f "$w/x/SHA256SUMS.sig"; pack unsigned.sufun manifest notes.ko.txt SHA256SUMS packages
+  expect update-unsigned-refused        refused "SHA256SUMS.sig" sufun-update --yes "$w/unsigned.sufun"
+  # 8. Extra file, link, and a path that tries to leave the folder
+  unpack; echo 'touch /run/sufun-pwned' > "$w/x/evil.sh"; pack extra.sufun "${ALL[@]}" evil.sh
+  expect update-extra-file-refused      refused "예상하지 못한 파일" sufun-update --yes "$w/extra.sufun"
+  unpack; ln -s /etc/shadow "$w/x/packages/zz-link.pkg.tar.zst"; pack link.sufun "${ALL[@]}"
+  expect update-link-refused            refused "링크" sufun-update --yes "$w/link.sufun"
+  unpack; echo pwned > "$w/x/evil"
+  ( cd "$w/x" && tar -P --owner=0 --group=0 --transform 's|^evil$|../../../../../../run/sufun-pwned|' -cf "$w/traversal.sufun" "${ALL[@]}" evil ) 2>/dev/null
+  expect update-path-traversal-refused  refused "예상하지 못한 파일" sufun-update --yes "$w/traversal.sufun"
+  check  update-nothing-escaped         bash -c '! ls /run/sufun-pwned /var/tmp/sufun-pwned /var/sufun-pwned 2>/dev/null | grep -q .'
+  # 9. Good list signature, but one package inside is signed by the attacker
+  unpack; pkg=$(ls "$w"/x/packages/*.pkg.tar.zst | head -n1); sign "$afpr" "packages/$(basename "$pkg")"; resum; sign "$tfpr" SHA256SUMS; pack badpkgsig.sufun "${ALL[@]}"
+  expect update-package-signature-checked refused "서명이 올바르지" sufun-update --yes "$w/badpkgsig.sufun"
+  # 10. Control: a NEWER update signed by the trusted key passes every check and
+  #     only then asks (no answer here = cancelled; nothing is installed).
+  unpack; setver 99; fakebase "$tfpr"; resum; sign "$tfpr" SHA256SUMS; pack newer.sufun "${ALL[@]}"
+  expect update-newer-signed-passes     ok "version=99" sufun-update --check "$w/newer.sufun"
+  expect update-newer-asks-first        refused "→ 99" sufun-update "$w/newer.sufun"
+  # 11. ...and the "needs at least version X" rule
+  unpack; setver 99 50; fakebase "$tfpr"; resum; sign "$tfpr" SHA256SUMS; pack minfrom.sufun "${ALL[@]}"
+  expect update-min-version-rule        refused "이상에서만" sufun-update --yes "$w/minfrom.sufun"
+  # 12. Option-like and odd file names are not passed on to tar
+  expect update-option-name-refused     refused "알 수 없는 옵션" sufun-update --yes --checkpoint-action=exec=id
+
+  check update-still-same-version bash -c '[[ $(pacman -Q sufun-base | awk "{print \$2}" | sed "s/-[0-9]*\$//") == "$1" ]]' _ "$cur"
+  check update-no-leftovers       bash -c '! compgen -G "/var/tmp/sufun-update.*" >/dev/null && [[ ! -e /var/lib/pacman/sync/sufun-update.db ]]'
+  umount /usr/share/sufun/keys; umount "$m"
+  gpgconf --kill all >/dev/null 2>&1; unset GNUPGHOME
+  rm -rf "$w" "$m"
+}
+
 PHASE=/var/lib/sufun-test/restore-phase
 part_sectors() { cat "/sys/class/block/${1#/dev/}/size"; }
 restore_prepare() {
@@ -611,6 +839,9 @@ case "$MODE" in
       check_image
       check_desktop sufun
       check_system
+      check live-firewall-on bash -c 'ufw status | grep -q "Status: active"'
+      security_live sufun
+      host_portscan
       check_welcome sufun
       check_desktop_extras sufun
       ram_report sufun
@@ -669,6 +900,7 @@ case "$MODE" in
     check timeshift-config   test -f /etc/timeshift/timeshift.json
     check os-release         grep -q '^ID=sufun' /etc/os-release
     check_system
+    security_accounts
     # The installer applied the live choice: the chooser must not run again
     check welcome-not-again  bash -c '[[ -f /var/lib/sufun/welcome-done ]] && ! pgrep -u sufun-oobe >/dev/null'
     if [[ -f /etc/sufun/boot-stage.conf ]]; then
@@ -695,6 +927,8 @@ case "$MODE" in
       check_sensors tester
       ram_details tester
       logout_screen tester
+      security_installed tester
+      host_portscan
     else
       say "FAIL desktop-login"
     fi
