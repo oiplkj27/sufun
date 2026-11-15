@@ -36,7 +36,8 @@ profile/airootfs/           Live-USB-only files (auto-login, installer, CI self-
 release-notes/<ver>.txt     Korean release notes shown in the update dialog
 scripts/                    sufun-key.sh, make-sufun-update.sh, check-aur-updates.sh, ci/
 scripts/windows/            sufun-sd-setup.ps1: Windows side of the microSD boot (no USB), see docs/sd-boot-ko.md
-docs/                       Korean guides: sd-boot-ko.md (microSD boot), windows-restore-ko.md (back to Windows)
+docs/                       Korean guides: emmc-install-ko.md (install to the internal disk, in order), signing-key-ko.md
+                            (signing key + pre-releases), sd-boot-ko.md (microSD boot), windows-restore-ko.md (rehearsal, back to Windows)
 .github/workflows/          build-iso.yml (test builds), release.yml (releases), build-test.yml (shared)
 ```
 
@@ -359,6 +360,8 @@ With btrfs + zstd the real space on the eMMC is about 30–40% lower. Plus up to
 - Or in Konsole: `sudo sufun-update ~/Downloads/sufun-update-1.1.sufun`
 - **Refused with a Korean message:** unsigned or wrongly signed files, a revoked/expired key, damaged files (checksum), unexpected contents, an older or the same version, or a too-old installed version. Internet is needed, because the Arch packages are updated in the same step (no half-updated system).
 
+**Pre-releases (시험판) before 1.0:** the `VERSION` file stays `1.0`. Test builds from `main` are version `1.0dev`; a tag `v1.0rc1`, `v1.0rc2`, ... makes a signed **pre-release** `1.0rcN` (ISO + `.sufun`, published as a GitHub "Pre-release" after your approval). pacman sorts `1.0dev < 1.0rc1 < 1.0rc2 < 1.0` (`scripts/version.sh`, checked in every build), so an installed test system takes each next pre-release and finally 1.0 as a normal update. Notes for pre-releases: `release-notes/prerelease.txt`. Korean steps, including making the key: **[docs/signing-key-ko.md](docs/signing-key-ko.md)**. Before publishing, the workflow checks the freshly signed `.sufun` with the public key from the repository (`scripts/ci/verify-sufun-update.sh`).
+
 **.sufun file contents:** `manifest` (version, minimum version, build time), `notes.ko.txt`, `packages/` (sufun-base, sufun-keyring and our other packages, each with a `.sig` signature), `SHA256SUMS` and `SHA256SUMS.sig` (signed).
 
 ---
@@ -430,7 +433,7 @@ SUFUN은 디스크를 암호화하지 않습니다. 대신 **Surface UEFI 암호
 
 **꼭 알아 둘 점 (보안 점검 결과, 자세한 내용은 `docs/security-audit.md`의 PH-1):**
 - **SD카드에 설치한 경우:** 카드를 빼서 다른 컴퓨터에 꽂으면 안의 파일을 모두 읽을 수 있습니다. UEFI 암호로는 막을 수 없습니다. Surface를 잃어버리면 카드 안의 파일도 남이 볼 수 있다고 생각하세요.
-- **부팅 메뉴의 "SUFUN Live (microSD, rescue)" 항목:** 복구용 라이브 시스템은 암호 없이 관리자 권한으로 켜집니다. Surface를 손에 넣은 사람이 이 항목을 고르면 로그인 암호 없이 파일을 읽을 수 있습니다. UEFI 암호는 이 메뉴를 막지 못합니다.
+- **부팅 메뉴의 "SUFUN Live (microSD, rescue)" 항목:** 내부 저장장치에 설치하면 이 항목은 **꺼져 있습니다** (앱 "복구 부팅 항목"으로 필요할 때만 켬). 켜져 있을 때 라이브 시스템은 **설치된 SUFUN의 관리자 암호**를 물어봅니다. 다만 공격자가 직접 만든 카드로 켜는 것은 이 암호로 막을 수 없으므로, 평소에는 꺼 두세요 ([docs/emmc-install-ko.md](docs/emmc-install-ko.md)).
 - 그래서 SUFUN의 로그인 암호와 화면 잠금은 **자리를 잠깐 비웠을 때**를 지켜 주는 것이고, **기기를 도난당했을 때** 파일을 지켜 주지는 못합니다. 정말 중요한 파일은 Surface에만 두지 말고, 암호로 잠근 압축 파일이나 클라우드에 두세요.
 
 > ⚠️ **UEFI 암호를 꼭 적어서 안전한 곳에 보관하세요.** Microsoft는 "UEFI 암호는 재설정할 수 없고, Microsoft도 알아낼 수 없다"고 안내합니다. 잊어버리면 Microsoft 서비스(기기 교체/수리)를 받아야 할 수 있습니다.
@@ -539,7 +542,17 @@ On other PCs a USB stick still works: [Rufus](https://rufus.ie) in **DD image** 
 ## 4. Install
 Double-click **Install SUFUN**: a full-screen, touch-friendly installer (like Windows setup) opens. All checks and the typed confirmations (`ERASE` / `YES`) are unchanged — the window only shows the questions of `/usr/local/bin/sufun-install --gui`, which still decides everything (terminal fallback: `sudo sufun-install` in Konsole). Two choices:
 1. **SD카드에 설치 (윈도우 유지)** — btrfs root (same subvolumes and options) in the card's free space after the live partition; the live partition stays as a rescue entry. `/boot` is on the card; the boot stage on the internal disk (mounted at `/efi`, `nofail`, never fsck'ed) gets kernel/initramfs/microcode copies from `/usr/lib/sufun/sync-boot-stage`, run by the pacman hook `99-sufun-boot-stage.hook` and the mkinitcpio post hook. No `bootctl install` (it would put a Linux entry before Windows). On the internal disk only `EFI/SUFUN/` and the SUFUN loader entries are written. Before installing, a 4K random-write test (`fio`, 8 MiB direct I/O) warns in Korean below ~2 MB/s and recommends an A2 card; you can continue.
-2. **내부 저장장치에 설치 (윈도우 삭제)** — erases the internal disk. First a warning that this Surface cannot boot from USB and an offer of a **restore dry-run** (a "Windows Setup" firmware entry that starts the existing Windows, to check it appears in the boot menu). If the live system runs from the card, a rescue entry for it is kept on the new EFI partition.
+2. **내부 저장장치에 설치 (윈도우 삭제)** — erases the internal disk. Korean step-by-step, in order: **[docs/emmc-install-ko.md](docs/emmc-install-ko.md)**. The installer
+   - warns when the ISO has **no SUFUN update key** (a system installed from it could never install `.sufun` updates);
+   - asks whether the **Windows restore rehearsal** worked (`sufun-sd-setup.ps1 -RestoreRehearsal <Windows 11 ISO>` on Windows, before anything is erased: real Windows Setup started from the internal disk without USB; its result is read from `EFI\SUFUN\rehearsal.txt`). Without a success it explains the risk and asks again, but does not block; the smaller **restore dry-run** from the live system is then still offered;
+   - offers **Windows 파일 가져오기**: the Windows partition is mounted read-only (ntfs3), the user's Desktop/Documents/Pictures/Downloads/Videos/Music are listed with sizes, copied to the microSD card first (new `SUFUNKEEP` partition in the card's free space, or a folder if the card is one partition; never RAM), and after the installation moved into the new home folders. Never copied: AppData, system folders, shortcuts, OneDrive online-only files. An interrupted installation finds the copy again;
+   - shows a **summary** (backup, rehearsal, update key) before the typed `ERASE`;
+   - creates the firmware entry **`SUFUN`** itself and puts it first (`bootctl install` inside a chroot never creates one), removes entries that point to erased partitions, and checks the fallback `\EFI\BOOT\BOOTX64.EFI`;
+   - keeps the microSD live system as a rescue entry, **switched off** (`sufun-rescue` / app "복구 부팅 항목").
+
+   **Live system and an installed SUFUN:** `sufun-live-guard` makes the live system ask for the installed system's administrator password (no auto-login, no free sudo) when it finds SUFUN on this computer; without one it stays password-less and does not lock the screen by itself.
+
+   **SUFUN 하드웨어 점검** (`sufun-hwcheck`, live and installed): one click writes `~/sufun-hwcheck-<date>.zip` with a Korean/English report (kernel, x86-64-v3, input devices + guided input test, tablet mode, accelerometer, cameras with a test frame, lid/sleep test, Wi-Fi/Bluetooth, battery, memory, sensors, firmware boot entries) without private data.
 
 Both modes refuse the disk the live system runs from, tell eMMC and microSD apart (`/sys/block/mmcblkN/device/type`: `MMC` = internal, `SD` = card), show model/size and need a typed `YES`/`ERASE`.
 

@@ -11,9 +11,80 @@ SUFUN 안의 **Windows 복원** 도구(`sufun-windows-restore`)가 **내부 저�
 | **SD카드에 설치 (윈도우 유지)** 또는 라이브만 사용 | Windows가 **아직 있습니다.** 카드를 빼고 켜면 Windows입니다. SUFUN 흔적까지 없애려면 Windows에서 `sufun-sd-setup.ps1 -Uninstall` ([sd-boot-ko.md](sd-boot-ko.md) 6번) |
 | **내부 저장장치에 설치 (윈도우 삭제)** | 아래 순서대로 |
 
+## 0단계: 복원 리허설 (Windows를 지우기 **전에**, Windows에서)
+
+**왜 하나요?** SUFUN을 내부 저장장치에 설치하면 Windows가 지워집니다. 이 Surface는 USB로 부팅할 수
+없어서, 돌아오는 길은 "내부 저장장치에서 Windows 설치 프로그램을 켜는 것" 하나뿐입니다.
+그 길이 **이 Surface에서 정말 되는지** 를, 아직 Windows가 있을 때 미리 한 번 해 보는 것이 리허설입니다.
+Windows와 내 파일은 지워지지 않습니다.
+
+**필요한 것:** Windows 11 ISO (아래 "Windows 11 ISO는 직접 받으세요"), C: 에 빈 공간 약 10 GB,
+`sufun-sd-setup.ps1` (SUFUN 저장소의 `scripts\windows` 폴더).
+
+### 리허설 순서
+
+1. Windows에서 **시작 단추 오른쪽 클릭 → 터미널(관리자)** 를 엽니다.
+2. 스크립트가 있는 폴더로 가서 실행합니다 (ISO 경로는 내 것으로 바꾸세요):
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\sufun-sd-setup.ps1 -RestoreRehearsal "C:\Users\내이름\Downloads\Win11_24H2_Korean_x64.iso"
+   ```
+
+3. 스크립트가 하는 일 (10~20분). 중간에 `YES` 를 한 번 입력합니다.
+   - BitLocker(장치 암호화)가 켜져 있으면 **복구 키를 준비했는지** 묻고, 다음 재시작 1번 동안 일시 중지합니다.
+   - C: 를 약 7 GB 줄이고, 그 자리에 FAT32 파티션 **WININSTALL** 을 만듭니다.
+   - ISO 내용을 복사합니다. 4 GB보다 큰 `install.wim` 은 Windows의 DISM으로 `install.swm`, `install2.swm`… 으로 나눕니다.
+   - 펌웨어 부팅 항목 **Windows Setup** 을 부팅 순서 **맨 끝**에 추가합니다. 기본값은 그대로라서 Windows가 평소처럼 켜집니다.
+4. **실제로 켜 보기:**
+   1. Surface를 끕니다.
+   2. **볼륨 위(+) 버튼을 누른 채 전원 버튼** 을 눌러 Surface UEFI를 엽니다.
+   3. **Boot configuration** → **Windows Setup** 을 **왼쪽으로 밀기(swipe)**.
+   4. 잠시 뒤 **Windows 설치 화면** (언어·키보드 고르기)이 나오면 **성공**입니다.
+   5. **아무것도 설치하지 마세요.** 창 오른쪽 위 **X** → "설치를 취소하시겠습니까?" **예**. Surface가 다시 시작되고 Windows가 켜집니다.
+5. **되돌리기:** Windows에서 다시 터미널(관리자)을 열고
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\sufun-sd-setup.ps1 -Uninstall
+   ```
+
+   - "Windows 설치 화면이 나왔습니까?" 라고 묻습니다. 본 대로 `y` 또는 `n` 을 입력하세요.
+     이 답은 SUFUN 부팅 파일 옆에 적혀서, 나중에 SUFUN 설치 프로그램이 요약 화면에 보여 줍니다.
+   - **Windows Setup** 항목과 **WININSTALL** 파티션을 지우고, **C: 를 리허설 전 크기로 정확히** 되돌립니다.
+   - SUFUN microSD 부팅 준비("SUFUN (SD)")는 그대로 둡니다 (SUFUN 라이브를 켜는 데 필요).
+     그것까지 지우려면 `-Uninstall` 을 한 번 더 실행하거나 `-Uninstall -All` 을 쓰세요.
+
+### 리허설이 실패하면
+
+| 증상 | 뜻 | 할 일 |
+|---|---|---|
+| Boot configuration에 **Windows Setup** 이 안 보임 | 펌웨어가 이 부팅 항목을 받아들이지 않음 | **Windows를 지우지 마세요.** "SD카드에 설치 (윈도우 유지)" 를 쓰세요 |
+| 항목은 보이는데 밀어도 Windows가 그냥 켜지거나 오류 화면 | 부팅 파일을 못 읽음 | 위와 같음. 스크립트 출력과 함께 알려 주세요 |
+| Windows 설치 화면이 뜨지만 "드라이버를 찾을 수 없음" 같은 오류 | 설치 프로그램이 WININSTALL의 파일을 못 읽음 | 위와 같음 |
+| BitLocker 복구 키를 물어봄 | 부팅 설정이 바뀌어서 생기는 정상 동작 | 준비해 둔 48자리 복구 키 입력 (<https://aka.ms/myrecoverykey>) |
+
+### 리허설과 실제 복원의 차이 (같은 것과 다른 것)
+
+리허설은 나중에 SUFUN의 **Windows 복원** 이 하는 일을 Windows에서 그대로 해 보는 것입니다.
+
+| | 리허설 (Windows에서) | 실제 복원 (SUFUN에서) | 같은가요? |
+|---|---|---|---|
+| 설치 파일 파티션 | FAT32, 이름 `WININSTALL`, 종류 "기본 데이터" | FAT32, 이름 `WININSTALL`, 종류 "기본 데이터" | 같음 |
+| 파티션 크기 | ISO 크기 + 512 MB, GB 단위로 올림 | 같은 계산 | 같음 |
+| 부팅 파일 | ISO의 `\efi\boot\bootx64.efi` + `\efi\microsoft\boot\bcd` | 같음 | 같음 |
+| 큰 `install.wim` | `install.swm` 으로 나눔 (3800 MB씩) | 같음 | 나누는 도구만 다름: Windows는 **DISM**, SUFUN은 **wimlib** |
+| 펌웨어 부팅 항목 | `Windows Setup`, 순서 맨 끝 | `Windows Setup`, 순서 맨 끝 | **바이트까지 같음** (자동 테스트가 두 결과를 비교함) |
+| 항목을 만드는 방법 | 펌웨어 변수에 직접 씀 | Linux의 `efibootmgr` | 결과물이 같음 |
+| 파티션 위치 | C: 바로 뒤 (보통 복구 파티션 앞) | SUFUN 파티션 바로 뒤 (디스크 끝) | **다름** (펌웨어는 위치가 아니라 파티션 고유 번호로 찾으므로 영향 없음) |
+| GPT의 파티션 "이름표" | `Basic data partition` (Windows 기본값) | `WININSTALL` | **다름** (표시용, 부팅과 무관) |
+| 줄이는 파티션 | C: (NTFS) | SUFUN (btrfs) | **다름** (SUFUN 쪽은 가상 머신에서 매번 테스트) |
+
+> 펌웨어 변수에 직접 쓰는 것이 안 되는 PC에서는 스크립트가 `bcdedit` 로 항목을 만듭니다 (화면에 알려 줌).
+> 이 경우 항목에 Windows 전용 데이터가 조금 더 붙어서 실제 복원의 항목과 완전히 같지는 않습니다.
+> 그때는 SUFUN 설치 프로그램의 **복원 드라이런** (아래)도 함께 해 보세요.
+
 ## Windows 11 ISO는 직접 받으세요
 
-SUFUN은 Microsoft 파일을 넣거나 자동으로 받지 않습니다. **SUFUN의 Firefox에서**:
+SUFUN은 Microsoft 파일을 넣거나 자동으로 받지 않습니다. **Windows의 Edge(리허설 때) 또는 SUFUN의 Firefox(실제 복원 때)에서**:
 
 1. <https://www.microsoft.com/ko-kr/software-download/windows11> 을 엽니다.
 2. **"x64 장치용 Windows 11 디스크 이미지(ISO) 다운로드"** → **Windows 11 (multi-edition ISO)** → 다운로드
@@ -73,10 +144,22 @@ Windows 설치 프로그램은 **메모리(RAM)에서** 실행되므로(boot.wim
 3. **C:** 를 오른쪽 클릭 → **볼륨 확장** → 남은 공간을 모두 C:에 추가.
    (C: 바로 뒤에 복구 파티션이 있으면 확장이 안 될 수 있습니다. 그대로 두어도 문제는 없습니다.)
 
+## Surface 드라이버와 펌웨어 (Windows를 다시 설치한 뒤 꼭)
+
+일반 Windows 11 ISO에는 Surface 전용 드라이버가 다 들어 있지 않습니다 (터치, 카메라, 배터리 표시 등이 안 될 수 있음).
+
+1. Wi-Fi에 연결하고 **설정 → Windows 업데이트** 를 끝까지 실행합니다 (여러 번 다시 시작).
+2. Microsoft 웹사이트에서 **"Surface Go 3 Drivers and Firmware"** 를 내려받아 설치합니다:
+   <https://www.microsoft.com/download/details.aspx?id=103504>
+   (`SurfaceGo3_Win11_....msi` 파일. 실행 → 다음 → 다시 시작)
+3. Wi-Fi 드라이버가 없어서 인터넷이 안 되면: 다른 PC에서 위 MSI 파일을 받아 **microSD 카드**에 넣어 옮기세요
+   (이 Surface의 USB-C는 데이터가 안 되므로 카드가 유일한 방법입니다). **미리 받아서 카드에 넣어 두는 것을 권장합니다.**
+
 ## 정품 인증
 
-Surface에는 Windows 11 Home 정품 키가 **펌웨어에 들어 있습니다.** 같은 에디션(Home)을 설치하면
-인터넷에 연결될 때 **자동으로 정품 인증**됩니다. 설치 중 제품 키를 물으면 **"제품 키가 없음"** 을 누르고,
+Surface에는 Windows 11 Home 정품 키가 **펌웨어에 들어 있고**, Microsoft 서버에도 이 기기의
+**디지털 라이선스**가 기록되어 있습니다. 같은 에디션(Home)을 설치하면
+인터넷에 연결될 때 **자동으로 정품 인증**됩니다 (키를 입력하거나 살 필요 없음). 설치 중 제품 키를 물으면 **"제품 키가 없음"** 을 누르고,
 에디션을 고르라면 **Windows 11 Home** 을 고르세요.
 
 ## BitLocker (장치 암호화)
@@ -86,9 +169,10 @@ Surface에는 Windows 11 Home 정품 키가 **펌웨어에 들어 있습니다.*
   <https://aka.ms/myrecoverykey> 에 저장됩니다. 한 번 확인해 적어 두세요.
 - 나중에 다시 SUFUN을 카드로 켜려면: Secure Boot를 None으로 바꾸고 [sd-boot-ko.md](sd-boot-ko.md) 처음부터.
 
-## 복원 드라이런 (Windows를 지우기 전)
+## 복원 드라이런 (작은 두 번째 테스트, SUFUN 라이브에서)
 
-"내부 저장장치에 설치 (윈도우 삭제)"를 고르면, 설치 프로그램이 먼저 **복원 드라이런**을 권합니다:
+위의 **0단계 복원 리허설**이 진짜 테스트입니다 (진짜 Windows 설치 프로그램을 켜 봄).
+리허설을 하지 않았다고 답하면, "내부 저장장치에 설치 (윈도우 삭제)" 때 설치 프로그램이 대신 이 **복원 드라이런**을 권합니다:
 
 1. Linux에서 만든 **Windows Setup** 부팅 항목을 추가합니다 (이때는 지금 있는 Windows를 켜도록).
 2. 컴퓨터를 끄고 **볼륨 위(+) + 전원** → **Boot configuration** 에 **Windows Setup** 이 보이는지
@@ -104,5 +188,12 @@ Windows는 절대 자동으로 지우지 않습니다 (`ERASE` 를 직접 입력
 SUFUN 파티션 줄이기, WININSTALL 만들기와 복사, install.wim 나누기, 부팅 항목이 순서 맨 끝에 생기는지,
 "다음 부팅 한 번" 설정으로 펌웨어가 실제로 그 파티션의 부팅 파일을 켜는지, 그리고 되돌리기.
 
-**시험하지 못한 것:** 진짜 Windows 설치 프로그램이 WININSTALL에서 켜지고 `install.swm` 으로 설치하는지,
-Surface의 실제 펌웨어 화면. 그래서 위의 **복원 드라이런**이 중요합니다.
+리허설 쪽 (Windows 스크립트)도 자동 테스트합니다. GitHub의 Windows 가상 머신에서 가상 디스크에 실제로 실행해서:
+C: 줄이기, WININSTALL 만들기, 복사, DISM으로 나누기, `-Uninstall` 뒤 C: 크기가 **정확히** 돌아오는지,
+그 디스크를 다른 가상 머신에서 켜면 펌웨어가 WININSTALL의 부팅 파일을 시작하는지, 그리고
+Windows 스크립트가 만든 부팅 항목이 `efibootmgr` 가 만드는 것과 **바이트까지 같은지**.
+
+**시험하지 못한 것 (가상 머신으로는 불가능):** 진짜 Windows 설치 프로그램이 WININSTALL에서 켜지고
+`install.swm` 으로 설치하는지, Surface의 실제 펌웨어 화면. **그래서 0단계 복원 리허설을 실제 Surface에서
+한 번 해 보는 것이 꼭 필요합니다.** 리허설은 "설치 화면이 뜨는 것"까지 확인합니다. 설치를 끝까지 해 보는 것은
+아닙니다 (그러면 Windows가 새로 깔리기 때문).

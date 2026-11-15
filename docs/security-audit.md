@@ -18,7 +18,7 @@ build, (3) fixes, (4) this report.
 | 라이브 시스템 방화벽 | 라이브 시스템은 암호가 없는데 방화벽이 꺼져 있었고, 같은 네트워크의 다른 컴퓨터가 보내는 "이름 찾기" 질문(포트 5355, 5353)에 대답하고 있었습니다. | 고침 (방화벽 켬, 대답 기능 끔) |
 | 업데이트 설치 버그 | 공격 테스트를 만들다가 발견: 이름에 `:` 가 들어간 패키지 때문에 **진짜 업데이트 파일도 거부**되고 있었습니다. 보안 구멍은 아니지만 첫 업데이트가 실패했을 것입니다. | 고침 + 자동 테스트 |
 | 릴리스 승인 | README에는 "서명 전에 승인"이라고 되어 있었지만 GitHub에 그 설정(`release` 환경)이 실제로는 없었습니다. | 고침 (만들었음) |
-| 기기를 훔친 사람 | 디스크 암호화가 없어서, Surface나 SD카드를 손에 넣은 사람은 파일을 읽을 수 있습니다. UEFI 암호로는 막을 수 없습니다. | **고치지 않음** (아래 PH-1, 결정 필요) |
+| 기기를 훔친 사람 | 디스크 암호화가 없어서, Surface나 SD카드를 손에 넣은 사람은 파일을 읽을 수 있습니다. UEFI 암호로는 막을 수 없습니다. | 일부 완화 (2026-11-15: 복구 부팅 항목 기본 꺼짐, 라이브가 설치된 SUFUN의 암호를 물음). 디스크 암호화는 쓰지 않기로 결정 |
 | CI 테스트 모드 | 실제 Surface에서는 절대 켜지지 않습니다 (QEMU 가상 머신인지 확인). | 확인 + 한 군데 보강 |
 | 네트워크 | 밖에서 접속할 수 있는 포트가 하나도 없습니다 (라이브·설치 모두, 호스트에서 전체 포트 스캔). | 확인 |
 | Firefox / uBlock | 보안 설정을 바꾼 것이 없고, uBlock 파일은 Mozilla가 공개한 것과 같은 파일입니다. | 확인 |
@@ -38,7 +38,7 @@ build, (3) fixes, (4) this report.
 | I-1 | Medium | installer: user in group `input` | fixed |
 | N-1 | Medium | live system without firewall | fixed |
 | G-1 | Medium | GitHub: `release` environment did not exist | fixed |
-| PH-1 | Medium | physical access, no disk encryption | **not fixed**, documented |
+| PH-1 | Medium | physical access, no disk encryption | narrowed 2026-11-15 (rescue entry off, live system asks for the installed password); not closed |
 | U-1 | Low | `sufun-update` read the user's file several times | fixed |
 | U-2 | Low | `sufun-update`: file names handed to `tar` | fixed |
 | T-1 | Low | `sufun-selftest` had no "QEMU only" check of its own | fixed |
@@ -80,7 +80,7 @@ build, (3) fixes, (4) this report.
 - **Tests:** lint rules "release job waits in the 'release' environment", "secrets are used only in release.yml". The approval rule itself is a GitHub setting; check it under *Settings → Environments → release*.
 - **Limit:** someone with your full GitHub login can also change that setting. Use two-factor login (see G-6).
 
-### PH-1 (Medium, not fixed) Someone who has the device
+### PH-1 (Medium, narrowed, not closed) Someone who has the device
 
 SUFUN does not encrypt the disk (this was a decision made earlier: "UEFI 암호, 디스크 암호화 대신"). Secure Boot is off on this Surface. What that means:
 
@@ -88,7 +88,8 @@ SUFUN does not encrypt the disk (this was a decision made earlier: "UEFI 암호,
 |---|---|---|
 | the Surface, switched on and locked | No (lock screen needs the password; no open network port) | not needed |
 | the Surface, eMMC install, **no** microSD card in it | Not without opening the device, **if** the UEFI password is set and USB boot is off: the firmware can't start a microSD card, the boot menu editor is off, root is locked. Without the UEFI password they can simply switch USB boot on. | **Yes, this is what it protects** |
-| the Surface **with the microSD card that holds the live system** | **Yes.** The boot menu offers "SUFUN Live (microSD, rescue)"; it starts as an administrator without a password and can read the internal disk. | **No** |
+| the Surface **with the microSD card that holds the live system** | *Before 2026-11-15:* **yes**, the boot menu offered "SUFUN Live (microSD, rescue)", which started as an administrator without a password. *Now:* the rescue entry is **off** after an internal install, and a live system that finds an installed SUFUN asks for its administrator password (see "Update" below). | No |
+| the Surface and **a card they prepared themselves** | Only if the rescue entry was switched on (it names the card by a number that can be copied). Off by default. | Yes (boot settings can't be changed) |
 | the microSD card of an SD install | **Yes.** They put the card into any computer. | **No** |
 | the opened device (eMMC chip read directly) | Yes | No |
 
@@ -96,8 +97,16 @@ So the UEFI password protects the firmware settings (boot order, USB boot, Secur
 
 **Why not fixed here:** the real fix is disk encryption (LUKS). That is a larger feature with its own problems on this tablet (typing the passphrase at boot without the Type Cover, the SD boot stage, Timeshift). It should be your decision.
 
+**Update 2026-11-15 (you decided against disk encryption; these two changes narrow the gap):**
+
+- **Rescue entry off by default.** After "내부 저장장치에 설치" the boot menu entry "SUFUN Live (microSD, rescue)" is written switched off. The app "복구 부팅 항목" (`sufun-rescue`, administrator password) turns it on when you need it.
+- **Live system asks for the installed password.** At every start the live system looks (read-only) for an installed SUFUN. If there is one, the live user gets that system's administrator password: login screen instead of auto-login, `sudo` and password windows ask for it, root is locked (`sufun-live-guard`). Without an installed SUFUN the live system stays password-less (needed for the first installation), and its automatic screen lock is off.
+- **What this protects:** someone who takes your Surface together with *your* card can no longer just start the live system and read the disk.
+- **What it does not protect:** (1) a card the attacker changed or made (the live system on it is theirs, so it does not run the check): that needs the rescue entry to be on, which is why it is off by default; (2) the eMMC chip read directly; (3) the card of an SD install put into another computer; (4) a damaged installed system that cannot be read: the live system then starts password-less, on purpose, so that you can still repair it.
+- **Tests:** `liveguard-*` (VM stage 5b: locked, no auto-login, root locked, no free sudo/pkexec, right password works, wrong one refused, disk not left mounted), `live-guard-open`, `live-no-auto-screen-lock`, `rescue-*`, lint group "live system and rescue entry".
+
 **What you can do now:**
-- eMMC install: take the microSD card with the live system out and keep it somewhere else. Then the rescue entry cannot start, and with a UEFI password the device is reasonably protected against a casual thief.
+- eMMC install: set the UEFI password, leave the rescue entry off, and keep the microSD card somewhere else. Then the device is reasonably protected against a casual thief.
 - SD install: treat the card like an unlocked USB stick.
 - Tell me if you want an "encrypt my files" option (encrypted home folder or full disk); it needs a design and real-hardware testing.
 
