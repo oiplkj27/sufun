@@ -42,7 +42,7 @@ printf 'tiny'                | w "$U/Desktop/tiny.txt"            # 4 bytes: sto
 printf '[.ShellClassInfo]\n' | w "$U/Desktop/desktop.ini"
 echo "pretend shortcut"      | w "$U/Desktop/Edge.lnk"
 echo "pretend thumbnails"    | w "$U/Pictures/Thumbs.db"
-yes sufun-import-test | head -c 3000000 | w "$U/Documents/보고서/report big.bin"
+head -c 3000000 < <(yes sufun-import-test) | w "$U/Documents/보고서/report big.bin"
 echo "kept in OneDrive, but really on this disk" | w "$U/OneDrive/Documents/from-onedrive.txt"
 head -c 200000 /dev/urandom  | w "$U/Pictures/photo.jpg"
 head -c 50000 /dev/urandom   | w "$U/Downloads/setup-file.zip"

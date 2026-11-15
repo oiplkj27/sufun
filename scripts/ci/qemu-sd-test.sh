@@ -78,8 +78,10 @@ fingerprint() {
 }
 fingerprint > before.txt
 
-SD=(-device sdhci-pci,sd-spec-version=3 -drive id=sdimg,if=none,format=raw,file=card.img -device sd-card,drive=sdimg)
-DISK=(-drive file=internal.img,if=virtio,format=raw)
+SD=(-device sdhci-pci,addr=0x3,sd-spec-version=3 -drive id=sdimg,if=none,format=raw,file=card.img -device sd-card,drive=sdimg)
+# bootindex: the firmware must start the internal disk (boot stage), never the card itself
+# (the card is bootable too; which one an unconfigured OVMF picks first is not fixed)
+DISK=(-drive file=internal.img,if=none,id=idisk,format=raw -device virtio-blk-pci,addr=0x4,drive=idisk,bootindex=1)
 
 fail=0
 # The first-start chooser picks English (US) here: the "abroad" path (English
