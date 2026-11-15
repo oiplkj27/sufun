@@ -847,7 +847,12 @@ hwcheck_test() {  # hwcheck_test <user>
   # privacy: no MAC address, no user name or home folder
   check hwcheck-no-mac        bash -c '! grep -qiE "([0-9a-f]{2}:){5}[0-9a-f]{2}" "$1/report.txt"' _ "$d"
   check hwcheck-no-names      bash -c '! grep -qE "(^|[^a-z])$2([^a-z]|\$)|/home/" "$1/report.txt"' _ "$d" "$u"
-  out=$(ubus "$u" env WAYLAND_DISPLAY=wayland-0 timeout 60 sufun-hwcheck --input-test-selfcheck 2>&1)
+  # the session's real Wayland socket; without one the window is drawn into memory
+  local sock wl=()
+  sock=$(find "/run/user/$(uid_of "$u")" -maxdepth 1 -type s -name 'wayland-*' 2>/dev/null | head -n 1)
+  [[ -n $sock ]] && wl=(WAYLAND_DISPLAY="${sock##*/}")
+  say "INFO hwcheck input test display: ${sock:-none (offscreen)}"
+  out=$(ubus "$u" env "${wl[@]}" timeout 60 sufun-hwcheck --input-test-selfcheck 2>&1)
   say "INFO hwcheck input test: $(tr '\n' ' ' <<< "$out" | cut -c1-200)"
   check hwcheck-input-window  grep -q 'SUFUN-INPUT-SELFCHECK: OK' <<< "$out"
   say "INFO hwcheck summary: $(sed -n '/요약/,/^$/p' "$d/report.txt" | head -n 16 | tr '\n' '|' | cut -c1-700)"
