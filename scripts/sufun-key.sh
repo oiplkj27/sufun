@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # SUFUN signing key helper. Run it yourself in a normal Git Bash / Linux terminal
 # (it asks for passphrases, so do not run it through an AI assistant or a script).
+# Korean step-by-step guide: docs/signing-key-ko.md
 #
 # Key structure:
 #   primary key  = "certify only". Lives ONLY in your offline backup (USB drive).
@@ -36,9 +37,28 @@ GNUPGHOME="$(mktemp -d)"; export GNUPGHOME
 chmod 700 "$GNUPGHOME"
 cleanup() { gpgconf --kill all >/dev/null 2>&1 || true; rm -rf "$GNUPGHOME"; }
 trap cleanup EXIT
+# The passphrase is asked HERE (typed blind, never shown, never stored) and
+# handed to gpg through a pipe. So gpg needs no "pinentry" window, which often
+# does not work in Git Bash on Windows.
 # Tests only: SUFUN_KEY_NOPASS=1 creates keys without a passphrase.
-NOPASS=()
-[[ ${SUFUN_KEY_NOPASS:-} == 1 ]] && NOPASS=(--batch --pinentry-mode loopback --passphrase '')
+PASS=
+ask_new_pass() {
+  [[ ${SUFUN_KEY_NOPASS:-} == 1 ]] && return 0
+  local p2
+  while :; do
+    read -rsp "New passphrase for the key (12 or more characters, nothing is shown while you type): " PASS; echo
+    read -rsp "The same passphrase again: " p2; echo
+    if [[ $PASS != "$p2" ]]; then echo "The two are different. Try again."; continue; fi
+    if (( ${#PASS} < 12 )); then echo "Too short (12 or more characters). Try again."; continue; fi
+    break
+  done
+}
+ask_old_pass() {
+  [[ ${SUFUN_KEY_NOPASS:-} == 1 ]] && return 0
+  read -rsp "Passphrase of the key: " PASS; echo
+}
+# g <gpg arguments...>: gpg with the passphrase on file descriptor 3
+g() { gpg --batch --pinentry-mode loopback --passphrase-fd 3 "$@" 3<<< "$PASS"; }
 
 primary_fpr() { gpg --with-colons --list-secret-keys | awk -F: '$1=="sec"{w=1} $1=="fpr"&&w{print $10; exit}'; }
 # Newest valid (not revoked/expired) signing subkey fingerprint
@@ -53,10 +73,13 @@ export_all() {  # write public key to the repo, secrets to the backup
   sub="$(signing_sub "$fpr")"
   [[ -n $sub ]] || die "no valid signing subkey found"
   gpg --armor --export "$fpr" > "$PUB"
-  gpg --armor --export-secret-keys "$fpr" > "$BK/sufun-primary-SECRET.asc"
+  # (exporting a secret key needs the passphrase too; the files stay protected by it)
+  g --armor --export-secret-keys "$fpr" > "$BK/primary.tmp" || { rm -f "$BK/primary.tmp"; die "could not export the key (wrong passphrase?)"; }
+  mv -f "$BK/primary.tmp" "$BK/sufun-primary-SECRET.asc"
   gpg --armor --export "$fpr" > "$BK/sufun-public.asc"
   # Only the subkey (primary is exported as a stub, so CI can sign but never certify)
-  gpg --armor --export-secret-subkeys "${sub}!" > "$BK/sufun-signing-subkey-for-github.asc"
+  g --armor --export-secret-subkeys "${sub}!" > "$BK/subkey.tmp" || { rm -f "$BK/subkey.tmp"; die "could not export the signing subkey"; }
+  mv -f "$BK/subkey.tmp" "$BK/sufun-signing-subkey-for-github.asc"
   cp -f "$GNUPGHOME"/openpgp-revocs.d/*.rev "$BK/" 2>/dev/null || true
   {
     echo "SUFUN signing key backup - $(date -u +%F)"
@@ -90,31 +113,36 @@ case "$cmd" in
     read -rp "Name on the key [SUFUN Release Signing]: " name; name=${name:-SUFUN Release Signing}
     read -rp "E-mail on the key (optional, it becomes public): " mail
     uid="$name"; [[ -n $mail ]] && uid="$name <$mail>"
-    say "Creating the primary key (certify only, no expiry). Choose a STRONG passphrase."
-    gpg "${NOPASS[@]}" --quick-gen-key "$uid" ed25519 cert never
+    say "Creating the primary key (certify only, no expiry). Choose a STRONG passphrase and write it down on paper."
+    ask_new_pass
+    g --quick-gen-key "$uid" ed25519 cert never
     fpr="$(primary_fpr)"
+    [[ -n $fpr ]] || die "the key was not created"
     say "Adding the signing subkey (expires in 2 years)"
-    gpg "${NOPASS[@]}" --quick-add-key "$fpr" ed25519 sign 2y
+    g --quick-add-key "$fpr" ed25519 sign 2y
     export_all "$fpr"
     ;;
   extend)
     fpr="$(import_backup)"; sub="$(signing_sub "$fpr")"
     [[ -n $sub ]] || die "no valid signing subkey to extend (expired or revoked: use 'rotate')"
     say "Extending subkey $sub by 2 years from today"
-    gpg "${NOPASS[@]}" --quick-set-expire "$fpr" 2y "$sub"
+    ask_old_pass
+    g --quick-set-expire "$fpr" 2y "$sub" || die "could not extend the subkey (wrong passphrase?)"
     export_all "$fpr"
     echo "Also upload the new subkey file to GitHub (step 1), then release an update so users get the new expiry date."
     ;;
   rotate)
     fpr="$(import_backup)"; old="$(signing_sub "$fpr")"
+    ask_old_pass
     if [[ -n $old ]]; then
       say "Revoking the old signing subkey $old (reason: key compromised)"
       # Answers for gpg's interactive questions: select key, revoke, yes, reason 1, no text, ok
       printf 'key %s\nrevkey\ny\n1\n\ny\nsave\n' "$old" \
-        | gpg "${NOPASS[@]}" --command-fd 0 --status-fd 2 --edit-key "$fpr" 2>/dev/null
+        | g --command-fd 0 --status-fd 2 --edit-key "$fpr" 2>/dev/null || true
+      [[ $(signing_sub "$fpr") != "$old" ]] || die "the old subkey was not revoked (wrong passphrase?)"
     fi
     say "Adding a new signing subkey (2 years)"
-    gpg "${NOPASS[@]}" --quick-add-key "$fpr" ed25519 sign 2y
+    g --quick-add-key "$fpr" ed25519 sign 2y || die "could not add a subkey (wrong passphrase?)"
     export_all "$fpr"
     echo "Old subkey is now revoked in keys/sufun.asc. Release an update soon: it ships the revocation to users."
     ;;

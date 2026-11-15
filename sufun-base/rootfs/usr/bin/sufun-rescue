@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# 복구 부팅 항목: switches the boot menu entry "SUFUN Live (microSD, rescue)" on or off.
+#
+# That entry starts the SUFUN live system from the microSD card (to repair or
+# reinstall SUFUN without USB). After "내부 저장장치에 설치" it is OFF: a live system
+# is a second way into this computer for anyone who holds it (docs/security-audit.md,
+# PH-1). Switch it on only when you need it, and off again afterwards.
+# When it is on and SUFUN is installed, the live system asks for the installed
+# administrator password before the desktop or sudo works.
+#
+#   sufun-rescue              window (Korean)
+#   sufun-rescue --status     on | off | none   (what the last change set)
+#   sufun-rescue --on         (root) switch on; refreshes the kernel copy from the card if it is inserted
+#   sufun-rescue --off        (root) switch off
+set -uo pipefail
+
+T="복구 부팅 항목"
+STATE=/var/lib/sufun/rescue-state
+# Boot menu folder: /boot (internal install) or the boot stage /efi (microSD install)
+ESP=/boot
+if [[ -f /etc/sufun/boot-stage.conf ]]; then
+  ESP=$(sed -n 's/^BOOT_STAGE_MOUNT=//p' /etc/sufun/boot-stage.conf | head -n1); ESP=${ESP:-/efi}
+fi
+ENTRY=$ESP/loader/entries/sufun-live.conf
+OFF=$ENTRY.off
+
+fail() { printf '\e[1;31m오류: %s\e[0m\n' "$1" >&2; echo "SUFUN-ERROR: $1"; exit 1; }
+need_root() { [[ $EUID -eq 0 ]] || fail "관리자 권한이 필요합니다."; }
+save() { mkdir -p "${STATE%/*}"; echo "$1" > "$STATE"; chmod 644 "$STATE"; }
+real_state() {  # root only (the boot partition is readable by root only)
+  if [[ -f $ENTRY ]]; then echo on; elif [[ -f $OFF ]]; then echo off; else echo none; fi
+}
+
+refresh() {  # newer kernel + initramfs from the card's live system, if the card is inserted
+  local uuid dev mp f n=0
+  uuid=$(sed -n 's|.*archisodevice=/dev/disk/by-uuid/\([^ ]*\).*|\1|p' "$ENTRY" | head -n1)
+  [[ $uuid =~ ^[A-Za-z0-9-]+$ ]] || return 0
+  dev=/dev/disk/by-uuid/$uuid
+  [[ -b $dev ]] || { echo "카드가 꽂혀 있지 않아 부팅 파일은 그대로 둡니다."; return 0; }
+  mp=$(mktemp -d)
+  if mount -o ro "$dev" "$mp" 2>/dev/null; then
+    for f in arch/boot/x86_64/vmlinuz-linux-surface arch/boot/x86_64/initramfs-linux-surface.img arch/boot/intel-ucode.img; do
+      [[ -f $mp/$f ]] || continue
+      cmp -s "$mp/$f" "$ESP/EFI/SUFUN/live/${f##*/}" && continue
+      install -D -m 600 "$mp/$f" "$ESP/EFI/SUFUN/live/${f##*/}" && n=$((n + 1))
+    done
+    umount "$mp"
+  fi
+  rmdir "$mp" 2>/dev/null
+  (( n )) && echo "카드의 라이브 시스템에 맞게 부팅 파일 ${n}개를 새로 복사했습니다."
+  return 0
+}
+
+case "${1:-}" in
+  --status)
+    if [[ $EUID -eq 0 ]]; then s=$(real_state); save "$s"; echo "$s"; else cat "$STATE" 2>/dev/null || echo none; fi
+    ;;
+  --on)
+    need_root
+    case $(real_state) in
+      none) fail "이 컴퓨터에는 복구 부팅 항목이 없습니다 (microSD 카드에서 설치하지 않았음)." ;;
+      off)  mv -f "$OFF" "$ENTRY" || fail "부팅 메뉴를 바꾸지 못했습니다." ;;
+    esac
+    refresh
+    save on
+    echo "SUFUN-OK: on"
+    ;;
+  --off)
+    need_root
+    case $(real_state) in
+      none) fail "이 컴퓨터에는 복구 부팅 항목이 없습니다." ;;
+      on)   mv -f "$ENTRY" "$OFF" || fail "부팅 메뉴를 바꾸지 못했습니다." ;;
+    esac
+    save off
+    echo "SUFUN-OK: off"
+    ;;
+  "")
+    command -v kdialog >/dev/null || { echo "kdialog가 없습니다. 터미널에서: sudo sufun-rescue --on | --off"; exit 1; }
+    s=$(cat "$STATE" 2>/dev/null || echo none)
+    if [[ $s == none ]]; then
+      kdialog --title "$T" --msgbox "이 컴퓨터에는 복구 부팅 항목이 없습니다.
+
+(복구 부팅 항목은 microSD 카드의 SUFUN 라이브에서 설치했을 때만 만들어집니다.)"
+      exit 0
+    fi
+    if [[ $s == on ]]; then now="켜짐"; q="복구 부팅 항목을 끌까요? (권장)"; act=--off; else now="꺼짐"; q="복구 부팅 항목을 켤까요?"; act=--on; fi
+    kdialog --title "$T" --yesno "복구 부팅 항목 'SUFUN Live (microSD, rescue)': 지금 $now
+
+켜면: 켤 때 부팅 메뉴(검은 화면)에서 microSD 카드의 SUFUN 라이브를 고를 수 있습니다.
+SUFUN이 켜지지 않을 때 고치거나 다시 설치하는 데 씁니다 (이 Surface는 USB로 부팅할 수 없음).
+라이브가 켜지면 이 SUFUN의 관리자 암호를 물어봅니다.
+
+끄면 (기본값, 더 안전): 이 Surface를 손에 넣은 사람이 준비해 온 카드로 다른 시스템을
+켜서 내 파일을 읽는 길이 막힙니다. 필요할 때만 켜고, 다 쓰면 다시 끄세요.
+
+$q" || exit 0
+    out=$(pkexec /usr/bin/sufun-rescue "$act" 2>&1); rc=$?
+    if (( rc == 126 || rc == 127 )); then kdialog --title "$T" --error "관리자 암호 확인이 취소되었습니다. 아무것도 바뀌지 않았습니다."; exit 1; fi
+    if (( rc != 0 )); then kdialog --title "$T" --error "$(sed -n 's/^SUFUN-ERROR: //p' <<< "$out" | head -n1)"; exit 1; fi
+    if [[ $act == --on ]]; then
+      kdialog --title "$T" --msgbox "켰습니다.
+$(grep -v '^SUFUN-' <<< "$out")
+쓰는 방법: microSD 카드를 꽂고 다시 시작 → 부팅 메뉴가 잠깐 보일 때 아무 키(또는 볼륨 버튼)를 눌러
+'SUFUN Live (microSD, rescue)' 를 고릅니다."
+    else
+      kdialog --title "$T" --msgbox "껐습니다."
+    fi
+    ;;
+  -h|--help) sed -n '2,16p' "$0" ;;
+  *) echo "알 수 없는 옵션: $1 (--help)" >&2; exit 2 ;;
+esac

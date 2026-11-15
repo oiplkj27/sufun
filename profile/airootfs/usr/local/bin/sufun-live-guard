@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# SUFUN live system, at every start, before the login screen (root):
+#
+# A) SUFUN is INSTALLED on this computer (internal disk or microSD card):
+#    the live system is not a free way around that system's login. The live user
+#    "sufun" gets the installed administrator's password: the login screen asks
+#    for it (no automatic login), and so do sudo, the password windows (polkit)
+#    and the lock screen. root cannot log in. The installed system is only READ
+#    (mounted read-only, no log replay); its password hash is copied into the live
+#    system's memory, never changed.
+#
+# B) No SUFUN installed (first installation): the live system stays password-less,
+#    as a live system must be. The automatic screen lock is switched off there,
+#    because the live user has no password to unlock with.
+#
+# What this does NOT protect: someone who can start a DIFFERENT system on this
+# computer (another card, a changed card) is not stopped by this script. That is
+# what "rescue entry off" (sufun-rescue) and the Surface UEFI password are for.
+# See docs/security-audit.md, PH-1.
+set -uo pipefail
+
+RUN=/run/sufun-live-guard
+mkdir -p "$RUN"; chmod 755 "$RUN"
+log() { echo "sufun-live-guard: $*"; }
+
+# Wait until the disks are known (internal eMMC, card reader)
+udevadm settle --timeout=20 2>/dev/null || true
+for _ in 1 2 3 4 5; do
+  [[ -n $(lsblk -nlo FSTYPE 2>/dev/null | grep -x btrfs) ]] && break
+  sleep 1
+done
+
+hash= user= where=
+for p in $(lsblk -pnlo NAME,FSTYPE | awk '$2 == "btrfs" {print $1}'); do
+  mp=$(mktemp -d)
+  # read-only, and without replaying the journal (nothing is written to the disk)
+  if mount -o ro,rescue=nologreplay,subvol=@ "$p" "$mp" 2>/dev/null \
+     || mount -o ro,subvol=@ "$p" "$mp" 2>/dev/null; then
+    if [[ -f $mp/usr/share/sufun/VERSION && -f $mp/etc/shadow && -f $mp/etc/group ]]; then
+      # administrators = members of "wheel"; the first one with a real password
+      for u in $(awk -F: '$1 == "wheel" {gsub(",", " ", $4); print $4}' "$mp/etc/group"); do
+        [[ $u =~ ^[a-z_][a-z0-9_-]*$ ]] || continue
+        h=$(awk -F: -v u="$u" '$1 == u {print $2; exit}' "$mp/etc/shadow")
+        # a usable hash: $id$... ; "!", "*", "" (locked / no password) do not count
+        if [[ $h =~ ^\$[0-9a-zA-Z]+\$[./A-Za-z0-9\$=,-]+$ ]]; then hash=$h user=$u where=$p; break; fi
+      done
+    fi
+    umount "$mp"
+  fi
+  rmdir "$mp" 2>/dev/null
+  [[ -n $hash ]] && break
+done
+
+if [[ -n $hash ]] && id sufun >/dev/null 2>&1; then
+  log "SUFUN is installed on $where: the live system asks for the password of '$user'"
+  usermod -p "$hash" sufun
+  # the login screen shows this as the user's name
+  usermod -c "SUFUN Live - 설치된 SUFUN ($user) 의 암호" sufun 2>/dev/null || usermod -c "SUFUN Live - password of $user" sufun
+  passwd -l root >/dev/null
+  # sudo: with password (the file exists only in the live system)
+  printf '# Live system on a computer with an installed SUFUN (sufun-live-guard):\n# sudo asks for the installed administrator password.\nsufun ALL=(ALL:ALL) ALL\n' > /etc/sudoers.d/10-sufun-live
+  chmod 440 /etc/sudoers.d/10-sufun-live
+  # no automatic login: desktop and text consoles
+  rm -f /etc/sddm.conf.d/20-live-autologin.conf
+  rm -f /etc/systemd/system/getty@tty1.service.d/autologin.conf
+  systemctl daemon-reload 2>/dev/null || true
+  echo "$user" > "$RUN/locked"
+  chmod 644 "$RUN/locked"
+else
+  log "no installed SUFUN found: password-less live system, automatic screen lock off"
+  f=/etc/xdg/kscreenlockerrc
+  if [[ -f $f ]]; then
+    sed -i -e 's/^Autolock=.*/Autolock=false/' -e 's/^LockOnResume=.*/LockOnResume=false/' "$f"
+  else
+    printf '[Daemon]\nAutolock=false\nLockOnResume=false\n' > "$f"
+  fi
+  : > "$RUN/open"
+fi
+exit 0

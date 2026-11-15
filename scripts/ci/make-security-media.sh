@@ -35,6 +35,8 @@ gpg --batch --quiet --import "$W/key/sufun-signing-subkey-for-github.asc"
 gpg --batch --quiet --import "$W/repo/keys/sufun.asc"
 SUFUN_SIGNING_PASSPHRASE='' bash "$W/repo/scripts/make-sufun-update.sh" "$W/pkgs" "$W/media" >/dev/null
 ls "$W"/media/*.sufun >/dev/null
+# The same check the release workflow does after signing (public key only)
+bash "$HERE/scripts/ci/verify-sufun-update.sh" "$(ls "$W"/media/*.sufun | head -n1)" "$W/repo/keys/sufun.asc" "$(bash "$W/repo/scripts/version.sh")"
 
 cp "$W/repo/keys/sufun.asc" "$W/media/test-public.asc"
 cp "$W/key/sufun-primary-SECRET.asc" "$W/media/test-SECRET-throwaway.asc"

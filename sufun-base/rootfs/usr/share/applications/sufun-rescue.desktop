@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Rescue Boot Entry
+Name[ko]=복구 부팅 항목
+Comment=Switch the "SUFUN Live (microSD, rescue)" boot menu entry on or off
+Comment[ko]=부팅 메뉴의 'SUFUN Live (microSD, rescue)' 항목 켜기/끄기
+Exec=/usr/bin/sufun-rescue
+Icon=sufun-logo
+Terminal=false
+Categories=System;

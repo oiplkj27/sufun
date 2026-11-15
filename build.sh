@@ -19,7 +19,7 @@ OUT="${OUT:-$HERE/out}"
 PROFILE="$WORK/profile"
 RELENG=/usr/share/archiso/configs/releng
 LOCALREPO=/var/tmp/sufun-repo         # path without spaces (pacman file:// URLs)
-VERSION="$(tr -d '[:space:]' < "$HERE/VERSION")"
+VERSION="$(bash "$HERE/scripts/version.sh")"     # 1.0, 1.0rcN or 1.0dev (see scripts/version.sh)
 
 # linux-surface package signing key: the FULL fingerprint (a short id could be imitated)
 SURFACE_KEY=87DEFA4AB94A99A4C8C3112556C464BAAC421453
@@ -36,6 +36,14 @@ pacman -Sy --needed --noconfirm archiso curl mkinitcpio
 
 rm -rf "$WORK"
 mkdir -p "$WORK" "$OUT"
+
+# The update scheme relies on this order (scripts/version.sh): test build <
+# pre-releases < official release. Checked with pacman's own comparison.
+for pair in "1.0dev 1.0rc1" "1.0rc1 1.0rc2" "1.0rc9 1.0rc10" "1.0rc10 1.0" "1.0 1.1dev" "1.0rc1 1.0.1"; do
+  read -r a b <<< "$pair"
+  (( $(vercmp "$a" "$b") < 0 )) || die "pacman does not sort version $a before $b"
+done
+log "Building SUFUN $VERSION"
 
 log "Trusting the linux-surface signing key on the build host"
 curl -fsSL "$SURFACE_KEY_URL" -o "$WORK/surface.asc"
@@ -56,7 +64,8 @@ cp -a "$RELENG" "$PROFILE"
 cp -a "$HERE/profile/airootfs/." "$PROFILE/airootfs/"
 SHARE="$PROFILE/airootfs/usr/share/sufun-iso"      # used by the installer
 install -Dm644 "$WORK/surface.asc" "$SHARE/surface.asc"
-install -Dm644 -t "$SHARE" "$HERE/packages/install.txt" "$HERE/packages/desktop.txt" "$HERE/VERSION"
+install -Dm644 -t "$SHARE" "$HERE/packages/install.txt" "$HERE/packages/desktop.txt"
+echo "$VERSION" > "$SHARE/VERSION"
 cp -a "$LOCALREPO" "$SHARE/repo"
 
 # pacman.conf used to build the ISO: stock + [multilib] (Steam) + linux-surface + our repo
@@ -135,6 +144,8 @@ enable ufw.service                   multi-user.target.wants
 ln -sf /usr/lib/systemd/system/bluetooth.service "$SD/dbus-org.bluez.service"
 mkdir -p "$SD/multi-user.target.wants"
 ln -sf /etc/systemd/system/sufun-live-user.service "$SD/multi-user.target.wants/sufun-live-user.service"
+# Asks for the installed SUFUN's password when SUFUN is installed on this computer
+ln -sf /etc/systemd/system/sufun-live-guard.service "$SD/multi-user.target.wants/sufun-live-guard.service"
 ln -sf /etc/systemd/system/sufun-selftest.service  "$SD/multi-user.target.wants/sufun-selftest.service"
 ln -sf /usr/lib/systemd/system/sddm.service     "$SD/display-manager.service"
 ln -sf /usr/lib/systemd/system/graphical.target "$SD/default.target"
@@ -157,6 +168,7 @@ file_permissions+=(
   ["/usr/local/bin/sufun-install"]="0:0:755"
   ["/usr/local/bin/sufun-install-gui"]="0:0:755"
   ["/usr/local/bin/sufun-selftest"]="0:0:755"
+  ["/usr/local/bin/sufun-live-guard"]="0:0:755"
   ["/etc/sudoers.d/10-sufun-live"]="0:0:440"
 )
 EOF

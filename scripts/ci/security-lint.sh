@@ -23,7 +23,9 @@ rule "job token is read-only by default"               bash -c "for f in $WF/*.y
 rule "only the release job may write (contents: write once)" bash -c "[[ \$(cat $WF/*.yml | grep -c 'contents: write') == 1 ]] && grep -q 'contents: write' $WF/release.yml"
 rule "secrets are used only in release.yml"            bash -c "! grep -lE '\\$\{\{\s*secrets\.' $WF/*.yml | grep -v release.yml"
 rule "release job waits in the 'release' environment"  bash -c "grep -qE '^\s+environment: release' $WF/release.yml"
-rule "release needs the build and tests first"         bash -c "grep -qE '^\s+needs: build-test' $WF/release.yml"
+rule "release needs the build and tests first"         bash -c "grep -qE '^\s+needs: \[check, build-test\]' $WF/release.yml"
+rule "release checks the signed update before publishing" bash -c "grep -nE 'verify-sufun-update\.sh|gh release create' $WF/release.yml | head -n1 | grep -q verify-sufun-update"
+rule "the build kind is checked, never free text"      bash -c "! SUFUN_VERSION_KIND='rc1;id' bash scripts/version.sh && [[ \$(SUFUN_VERSION_KIND=rc7 bash scripts/version.sh) == *rc7 ]]"
 rule "checkout never keeps the job token"              bash -c "[[ \$(cat $WF/*.yml | grep -c 'actions/checkout@') == \$(cat $WF/*.yml | grep -c 'persist-credentials: false') ]]"
 # G-4: the key passphrase is never a command line argument
 rule "signing passphrase only through a pipe"          bash -c "! grep -rnE -- '--passphrase \"?\\$' $WF scripts/make-sufun-update.sh"
@@ -72,6 +74,20 @@ for f in sufun-base/rootfs/usr/bin/sufun-update sufun-base/rootfs/usr/bin/sufun-
   case $(head -c 2 "$f") in '#!') head -n1 "$f" | grep -q 'sh' && { bash -n "$f" 2>/dev/null || fail "shell syntax: $f"; } ;; esac
 done
 ok "shell syntax of every script"
+
+echo "== live system and rescue entry (PH-1), updates"
+INST=profile/airootfs/usr/local/bin/sufun-install
+GUARD=profile/airootfs/usr/local/bin/sufun-live-guard
+rule "rescue boot entry is written switched off"       bash -c "grep -q 'loader/entries/sufun-live.conf.off' $INST && ! grep -q '> /mnt/boot/loader/entries/sufun-live.conf\$' $INST"
+rule "live guard starts before any login"              bash -c "grep -q 'sufun-live-guard.service' build.sh && grep -qE '^Before=.*display-manager.service.*getty' profile/airootfs/etc/systemd/system/sufun-live-guard.service"
+rule "live guard only reads the installed system"      bash -c "! grep -nE '^\s*mount ' $GUARD | grep -v -- '-o ro' && ! grep -qE 'mount .*(rw|remount)' $GUARD"
+rule "live guard: no auto-login, root locked, sudo with password" bash -c "grep -q 'rm -f /etc/sddm.conf.d/20-live-autologin.conf' $GUARD && grep -q 'passwd -l root' $GUARD && grep -q 'sufun ALL=(ALL:ALL) ALL' $GUARD"
+rule "Windows files are read from a read-only mount"   bash -c "grep -q 'mount -t ntfs3 -o ro,noatime' $INST && ! grep -nE '(^| )mount [^|]*WIN_MNT' $INST | grep -v -- '-o ro'"
+rule "installer warns when the ISO has no update key"  grep -q 'sufun-release.gpg' $INST
+rule "SUFUN firmware entry is made by the installer"   bash -c "grep -q 'bootctl install --no-variables' $INST && grep -q -- '--create --disk \"\$DISK\" --part 1 --label SUFUN' $INST"
+rule "pre-release tags are matched exactly"            bash -c "grep -q \"grep -qxE 'rc\[1-9\]\[0-9\]\*'\" $WF/release.yml"
+rule "version order is checked at build time"          grep -q 'pacman does not sort version' build.sh
+rule "Windows script: rehearsal entry only removed when it is ours" grep -q "(Get-LoadOptionName \$opt) -ne \$RehEntryName" scripts/windows/sufun-sd-setup.ps1
 
 echo "== Firefox policy and the bundled uBlock Origin"
 python3 - <<'PY' || bad=1

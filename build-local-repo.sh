@@ -76,11 +76,14 @@ while read -r name _; do
 done < <(awk '{sub(/#.*/,"")} NF {print $1, $2}' "$HERE/packages/aur.txt")
 
 # 2. keyring (public key + revocation list; both may be missing in test builds)
-build sufun-keyring "$HERE/sufun-keyring" "$HERE/VERSION" "$HERE/keys/sufun.asc" "$HERE/keys/sufun-revoked"
+# The version of this build (1.0, 1.0rcN or 1.0dev: scripts/version.sh), as a file
+# next to the PKGBUILDs.
+bash "$HERE/scripts/version.sh" > "$BUILD_DIR/VERSION"
+build sufun-keyring "$HERE/sufun-keyring" "$BUILD_DIR/VERSION" "$HERE/keys/sufun.asc" "$HERE/keys/sufun-revoked"
 
 # 3. sufun-base
 echo "$HOME_URL" > "$BUILD_DIR/HOME_URL"
-build sufun-base "$HERE/sufun-base" "$HERE/VERSION" "$BUILD_DIR/HOME_URL" \
+build sufun-base "$HERE/sufun-base" "$BUILD_DIR/VERSION" "$BUILD_DIR/HOME_URL" \
   "$HERE/packages/desktop.txt" "$HERE/packages/aur.txt"
 
 log "Local repo $REPO:"

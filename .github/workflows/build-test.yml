@@ -8,9 +8,18 @@ name: Build and test (shared)
 
 on:
   workflow_call:
+    inputs:
+      # dev (test build, version 1.0dev), release (1.0) or rc<N> (pre-release 1.0rcN).
+      # Set by release.yml from the tag name; see scripts/version.sh.
+      version_kind:
+        type: string
+        default: dev
 
 permissions:
   contents: read
+
+env:
+  SUFUN_VERSION_KIND: ${{ inputs.version_kind }}
 
 jobs:
   # Static security checks of the repository itself (workflows, test mode gates,
@@ -55,6 +64,23 @@ jobs:
           compression-level: 0
           retention-days: 14
 
+      # For the Windows restore rehearsal test (windows-sd-setup + test-sd): an ISO
+      # with the layout of a Windows 11 ISO, but without any Microsoft file.
+      - name: Dummy "Windows ISO" for the restore rehearsal test
+        run: |
+          pacman -S --noconfirm --needed libisoburn wimlib util-linux
+          iso=$(ls out/*.iso | head -n1)
+          mkdir -p out-test
+          bash scripts/ci/make-dummy-windows-iso.sh "$iso" "$(blkid -s LABEL -o value "$iso")" out-test/dummy-windows.iso
+
+      - name: Upload the dummy Windows ISO
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f   # v6
+        with:
+          name: sufun-dummy-winiso
+          path: out-test/dummy-windows.iso
+          compression-level: 0
+          retention-days: 3
+
       # Packed into one tar because artifact file names may not contain ":"
       # (packages with an epoch are named like "name-1:1.0-1-any.pkg.tar.zst").
       - name: Pack packages
@@ -95,7 +121,7 @@ jobs:
           for try in 1 2 3 4 5; do
             sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update &&
             sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y --no-install-recommends \
-              qemu-system-x86 qemu-utils ovmf xorriso python3 wimtools nmap dnsmasq-base gnupg && exit 0
+              qemu-system-x86 qemu-utils ovmf xorriso python3 wimtools nmap dnsmasq-base gnupg ntfs-3g dosfstools gdisk && exit 0
             echo "apt failed (try $try), waiting 30 s"; sleep 30
           done
           exit 1
@@ -113,7 +139,7 @@ jobs:
           path: pkgtar
 
       - name: Boot, install and security test
-        run: bash scripts/ci/qemu-test.sh iso/*.iso "$(tr -d '[:space:]' < VERSION)" test-results pkgtar/sufun-packages.tar
+        run: bash scripts/ci/qemu-test.sh iso/*.iso "$(bash scripts/version.sh)" test-results pkgtar/sufun-packages.tar
 
       - name: Upload screenshots and serial logs
         if: always()
@@ -139,6 +165,11 @@ jobs:
           name: sufun-iso
           path: iso
 
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131   # v7
+        with:
+          name: sufun-dummy-winiso
+          path: winiso
+
       - name: Check the scripts parse in Windows PowerShell 5.1
         shell: powershell
         run: |
@@ -151,11 +182,12 @@ jobs:
           $b = [IO.File]::ReadAllBytes((Resolve-Path 'scripts\windows\sufun-sd-setup.ps1'))
           if ($b[0] -ne 0xEF -or $b[1] -ne 0xBB -or $b[2] -ne 0xBF) { Write-Host 'sufun-sd-setup.ps1 has no UTF-8 BOM'; exit 1 }
 
-      - name: Setup test (case a + case b, ESP and SUFUNBOOT partition, uninstall)
+      - name: Setup test (case a + case b, ESP and SUFUNBOOT partition, uninstall, restore rehearsal)
         shell: powershell
         run: |
           $iso = (Get-ChildItem iso\*.iso | Select-Object -First 1).FullName
-          & .\scripts\ci\windows-sd-setup-test.ps1 -Phase setup -Work "$env:RUNNER_TEMP\sdtest" -Iso $iso
+          $win = (Get-ChildItem winiso\*.iso | Select-Object -First 1).FullName
+          & .\scripts\ci\windows-sd-setup-test.ps1 -Phase setup -Work "$env:RUNNER_TEMP\sdtest" -Iso $iso -WinIso $win
           exit $LASTEXITCODE
 
       - name: Upload the virtual internal disk and SD card
@@ -165,10 +197,12 @@ jobs:
           path: |
             ${{ runner.temp }}/sdtest/internal.vhdx
             ${{ runner.temp }}/sdtest/card.vhdx
+            ${{ runner.temp }}/sdtest/rehearsal.vhdx
+            ${{ runner.temp }}/sdtest/rehearsal-entry.hex
           compression-level: 1
           retention-days: 3
 
-      - name: Uninstall test (case a)
+      - name: Uninstall test (case a, and the restore rehearsal)
         shell: powershell
         run: |
           & .\scripts\ci\windows-sd-setup-test.ps1 -Phase uninstall -Work "$env:RUNNER_TEMP\sdtest"
@@ -212,8 +246,14 @@ jobs:
           name: sufun-sd-test-disks
           path: sd-disks
 
-      - name: microSD boot and install test
-        run: bash scripts/ci/qemu-sd-test.sh sd-disks "$(tr -d '[:space:]' < VERSION)" test-results-sd
+      # For the restore rehearsal boot test (root file system of its test kernel)
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131   # v7
+        with:
+          name: sufun-iso
+          path: iso
+
+      - name: microSD boot, install and restore rehearsal test
+        run: bash scripts/ci/qemu-sd-test.sh sd-disks "$(bash scripts/version.sh)" test-results-sd iso/*.iso
 
       - name: Upload screenshots and serial logs
         if: always()

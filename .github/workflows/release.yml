@@ -1,9 +1,15 @@
-# Official release: push a tag "v<version>" that matches the VERSION file, e.g.
-#   git tag v1.1 && git push origin v1.1
+# Releases. Push a tag:
+#   official release   v<VERSION>          e.g.  git tag v1.0     && git push origin v1.0
+#   pre-release (시험판) v<VERSION>rc<N>    e.g.  git tag v1.0rc1  && git push origin v1.0rc1
+# <VERSION> is the VERSION file. A pre-release gets the version 1.0rcN, which
+# sorts before 1.0 (scripts/version.sh), so the VERSION file stays 1.0 until the
+# official release, and every installed test system can take the next pre-release
+# and later the official release as a normal signed update.
 # 1. checks the tag, 2. builds + boot-tests (same as test builds),
 # 3. ONLY if the tests pass and you approve it (environment "release"):
-#    signs the packages, makes sufun-update-<version>.sufun + SHA256SUMS,
-#    and publishes a GitHub Release.
+#    signs the packages, makes sufun-update-<version>.sufun + SHA256SUMS, checks
+#    the result with the public key, and publishes a GitHub Release
+#    (marked "Pre-release" for rc tags).
 # The signing key lives only in the "release" environment's secrets, so pushes,
 # pull requests and forks can never use it.
 name: Release
@@ -22,32 +28,46 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
+    outputs:
+      kind: ${{ steps.kind.outputs.kind }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5
         with:
           persist-credentials: false   # the job token is not left in .git/config
-      - name: Tag must match VERSION, release notes must exist
+      - name: Tag must match VERSION, release notes and public key must exist
+        id: kind
         run: |
           v=$(tr -d '[:space:]' < VERSION)
-          [ "$GITHUB_REF_NAME" = "v$v" ] || { echo "::error::tag $GITHUB_REF_NAME does not match VERSION ($v)"; exit 1; }
-          [ -f "release-notes/$v.txt" ] || { echo "::error::missing release-notes/$v.txt"; exit 1; }
-          [ -s keys/sufun.asc ] || { echo "::error::keys/sufun.asc (public key) is missing"; exit 1; }
+          if [ "$GITHUB_REF_NAME" = "v$v" ]; then
+            kind=release; notes="release-notes/$v.txt"
+          elif [ "${GITHUB_REF_NAME#"v$v"}" != "$GITHUB_REF_NAME" ] && printf '%s' "${GITHUB_REF_NAME#"v$v"}" | grep -qxE 'rc[1-9][0-9]*'; then
+            kind="${GITHUB_REF_NAME#"v$v"}"; notes=release-notes/prerelease.txt
+          else
+            echo "::error::tag $GITHUB_REF_NAME is neither v$v (release) nor v${v}rc<N> (pre-release)"; exit 1
+          fi
+          [ -f "$notes" ] || { echo "::error::missing $notes"; exit 1; }
+          [ -s keys/sufun.asc ] || { echo "::error::keys/sufun.asc (public key) is missing: see docs/signing-key-ko.md"; exit 1; }
+          echo "kind=$kind" >> "$GITHUB_OUTPUT"
+          echo "This is: $kind, version $(SUFUN_VERSION_KIND=$kind bash scripts/version.sh)"
 
   build-test:
     needs: check
     uses: ./.github/workflows/build-test.yml
+    with:
+      version_kind: ${{ needs.check.outputs.kind }}
 
   release:
-    needs: build-test              # runs only if build AND boot/install tests passed
+    needs: [check, build-test]     # runs only if build AND boot/install tests passed
     runs-on: ubuntu-latest
     environment: release           # waits for your approval; holds the signing secrets
     permissions:
       contents: write              # to create the GitHub Release
+    env:
+      SUFUN_VERSION_KIND: ${{ needs.check.outputs.kind }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5
         with:
           persist-credentials: false   # the job token is not left in .git/config
-
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131   # v7
         with: { name: sufun-iso, path: iso }
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131   # v7
@@ -78,6 +98,11 @@ jobs:
           SUFUN_SIGNING_PASSPHRASE: ${{ secrets.SUFUN_SIGNING_PASSPHRASE }}
         run: bash scripts/make-sufun-update.sh packages dist
 
+      # Before anything is published: would an installed SUFUN accept this file?
+      # Checked with the PUBLIC key from the repository only (no secret needed).
+      - name: Check the update file like sufun-update will
+        run: bash scripts/ci/verify-sufun-update.sh dist/*.sufun keys/sufun.asc "$(bash scripts/version.sh)"
+
       - name: Add ISO (split into parts if it is 2 GiB or larger)
         run: bash scripts/ci/add-iso-to-release.sh iso dist
 
@@ -98,8 +123,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          v=$(tr -d '[:space:]' < VERSION)
-          gh release create "$GITHUB_REF_NAME" dist/* --title "SUFUN $v" --notes-file "release-notes/$v.txt"
+          ver=$(bash scripts/version.sh)
+          if [ "$SUFUN_VERSION_KIND" = release ]; then
+            gh release create "$GITHUB_REF_NAME" dist/* --title "SUFUN $ver" --notes-file "release-notes/$ver.txt"
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* --prerelease --title "SUFUN $ver (시험판 / pre-release)" --notes-file release-notes/prerelease.txt
+          fi
 
       - name: Remove the key from the runner
         if: always()

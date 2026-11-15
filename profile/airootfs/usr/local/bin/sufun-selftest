@@ -10,7 +10,10 @@
 #                         desktop, report results, power off
 #   sufun.test=sdinstall  live system on the microSD card: "SD카드에 설치" automatically
 #   sufun.test=winsetup   started from the Windows restore test partition: report, power off
-#   (installed, 2nd start with /var/lib/sufun-test/restore-phase: Windows restore cleanup test)
+#   sufun.test=liveguard  live system on a computer that has SUFUN installed: it must
+#                         ask for the installed system's password (sufun-live-guard)
+#   (installed, 2nd start with /var/lib/sufun-test/restore-phase: Windows restore cleanup test;
+#    3rd start, with the firmware's boot entries wiped: the fallback boot file must start SUFUN)
 MODE=$(sed -n 's/.*sufun\.test=\([a-z]*\).*/\1/p' /proc/cmdline)
 # Tool output in English, whatever language the first-start chooser picked
 export LC_ALL=C.UTF-8
@@ -630,6 +633,11 @@ security_common() {  # security_common <user>
 
 # --- live system only ---
 security_live() {  # security_live <user>
+  # No SUFUN is installed on this test computer: the live system is password-less
+  # and does not lock the screen by itself (the live user has no password).
+  check live-guard-open           test -e /run/sufun-live-guard/open
+  check live-sudo-without-password runuser -u "$1" -- sudo -n true
+  check live-no-auto-screen-lock  bash -c 'grep -qx "Autolock=false" /etc/xdg/kscreenlockerrc && grep -qx "LockOnResume=false" /etc/xdg/kscreenlockerrc'
   # The installer's automatic test mode needs its own kernel option
   # (sufun.test=install/sdinstall); this boot has sufun.test=live, so it must refuse.
   expect installer-test-mode-refused refused "Test mode refused" env SUFUN_AUTO=1 SUFUN_MODE=emmc SUFUN_USER=x SUFUN_PASS=x /usr/local/bin/sufun-install
@@ -709,11 +717,12 @@ update_attack_tests() {  # update_attack_tests <user>
   resum()  { ( cd "$w/x" && find . -type f ! -name 'SHA256SUMS*' | sed 's|^\./||' | LC_ALL=C sort | xargs sha256sum > SHA256SUMS ); }
   sign()   { gpg --batch --yes --pinentry-mode loopback --passphrase '' -u "$1" --detach-sign --output "$w/x/$2.sig" "$w/x/$2" 2>/dev/null; }
   setver() { sed -i -e "s/^version=.*/version=$1/" -e "s/^min_from=.*/min_from=${2:-}/" "$w/x/manifest"; }
-  fakebase() {  # a tiny "sufun-base 99" package signed with key $1
+  fakebase() {  # a tiny "sufun-base <version, default 99>" package signed with key $1
+    local v=${2:-99}
     rm -f "$w"/x/packages/sufun-base-*; rm -rf "$w/p"; mkdir "$w/p"
-    printf 'pkgname = sufun-base\npkgbase = sufun-base\npkgver = 99-1\npkgdesc = security test\nurl = https://example.invalid\nbuilddate = 1\npackager = test\nsize = 0\narch = any\n' > "$w/p/.PKGINFO"
-    bsdtar -C "$w/p" -cf - .PKGINFO | zstd -q > "$w/x/packages/sufun-base-99-1-any.pkg.tar.zst"
-    sign "$1" packages/sufun-base-99-1-any.pkg.tar.zst
+    printf 'pkgname = sufun-base\npkgbase = sufun-base\npkgver = %s-1\npkgdesc = security test\nurl = https://example.invalid\nbuilddate = 1\npackager = test\nsize = 0\narch = any\n' "$v" > "$w/p/.PKGINFO"
+    bsdtar -C "$w/p" -cf - .PKGINFO | zstd -q > "$w/x/packages/sufun-base-$v-1-any.pkg.tar.zst"
+    sign "$1" "packages/sufun-base-$v-1-any.pkg.tar.zst"
   }
 
   # 2. The real file (made by the release tools) passes signature + checksums ...
@@ -756,7 +765,23 @@ update_attack_tests() {  # update_attack_tests <user>
   # 11. ...and the "needs at least version X" rule
   unpack; setver 99 50; fakebase "$tfpr"; resum; sign "$tfpr" SHA256SUMS; pack minfrom.sufun "${ALL[@]}"
   expect update-min-version-rule        refused "이상에서만" sufun-update --yes "$w/minfrom.sufun"
-  # 12. Option-like and odd file names are not passed on to tar
+  # 12. Pre-releases (scripts/version.sh): test build < 1.0rc1 < 1.0rc2 < ... < 1.0.
+  #     This test build is "<base>dev": a signed pre-release and the official
+  #     release are accepted as updates; an older pre-release never is.
+  local base=${cur%dev}
+  say "INFO version order: $(for pair in "${base}dev ${base}rc1" "${base}rc1 ${base}rc2" "${base}rc9 ${base}rc10" "${base}rc10 $base" "${base}rc2 ${base}rc1" "$base ${base}rc5"; do set -- $pair; printf '%s?%s=%s ' "$1" "$2" "$(vercmp "$1" "$2")"; done)"
+  check version-order bash -c '(( $(vercmp "$1dev" "$1rc1") < 0 && $(vercmp "$1rc1" "$1rc2") < 0 && $(vercmp "$1rc9" "$1rc10") < 0 && $(vercmp "$1rc10" "$1") < 0 && $(vercmp "$1" "$1.1dev") < 0 ))' _ "$base"
+  if [[ $cur == *dev ]]; then
+    unpack; setver "${base}rc1"; fakebase "$tfpr" "${base}rc1"; resum; sign "$tfpr" SHA256SUMS; pack rc1.sufun "${ALL[@]}"
+    expect update-prerelease-accepted   ok "version=${base}rc1" sufun-update --check "$w/rc1.sufun"
+    expect update-prerelease-asks-first refused "→ ${base}rc1" sufun-update "$w/rc1.sufun"
+    unpack; setver "$base"; fakebase "$tfpr" "$base"; resum; sign "$tfpr" SHA256SUMS; pack final.sufun "${ALL[@]}"
+    expect update-release-after-prerelease refused "→ $base" sufun-update "$w/final.sufun"
+    # "<base>beta" sorts before "<base>dev": going back is refused although the signature is good
+    unpack; setver "${base}beta"; fakebase "$tfpr" "${base}beta"; resum; sign "$tfpr" SHA256SUMS; pack older.sufun "${ALL[@]}"
+    expect update-older-prerelease-refused refused "되돌릴 수 없습니다" sufun-update --yes "$w/older.sufun"
+  fi
+  # 13. Option-like and odd file names are not passed on to tar
   expect update-option-name-refused     refused "알 수 없는 옵션" sufun-update --yes --checkpoint-action=exec=id
 
   check update-still-same-version bash -c '[[ $(pacman -Q sufun-base | awk "{print \$2}" | sed "s/-[0-9]*\$//") == "$1" ]]' _ "$cur"
@@ -764,6 +789,103 @@ update_attack_tests() {  # update_attack_tests <user>
   umount /usr/share/sufun/keys; umount "$m"
   gpgconf --kill all >/dev/null 2>&1; unset GNUPGHOME
   rm -rf "$w" "$m"
+}
+
+# ===================== eMMC install preparation (rehearsal, updates, import, rescue, hwcheck) =====================
+# --- firmware boot entries after "내부 저장장치에 설치": SUFUN first, fallback file, no dead entries ---
+firmware_checks() {
+  local first parts dead=""
+  say "INFO firmware entries: $(efibootmgr | grep -E '^Boot(Order|Current|[0-9A-F]{4})' | cut -c1-70 | tr '\n' '|')"
+  first=$(efibootmgr | sed -n 's/^BootOrder: \([0-9A-Fa-f]\{4\}\).*/\1/p')
+  check efi-entry-sufun-first  bash -c 'efibootmgr -v | grep -E "^Boot$1[*]? SUFUN[[:space:]]" | grep -qi "systemd-bootx64.efi"' _ "$first"
+  check efi-booted-from-sufun  bash -c '[[ $(efibootmgr | sed -n "s/^BootCurrent: //p") == "$1" ]]' _ "$first"
+  check efi-fallback-loader    bash -c 'cmp -s /boot/EFI/BOOT/BOOTX64.EFI /boot/EFI/systemd/systemd-bootx64.efi'
+  check efi-one-sufun-entry    bash -c '[[ $(efibootmgr | grep -cE "^Boot[0-9A-F]{4}[*]? (SUFUN|Linux Boot Manager)([[:space:]]|$)") == 1 ]]'
+  # every entry that names a partition must name one that exists
+  parts=$(lsblk -no PARTUUID | grep . | tr 'A-Z' 'a-z')
+  while IFS= read -r g; do grep -qx "${g,,}" <<< "$parts" || dead+=" $g"; done \
+    < <(efibootmgr -v | grep -oE 'HD\([0-9]+,GPT,[0-9A-Fa-f-]{36}' | sed 's/.*,//' | sort -u)
+  if [[ -z $dead ]]; then say "PASS efi-no-dead-entries"; else say "FAIL efi-no-dead-entries ($dead)"; fi
+  check rescue-entry-none      bash -c '[[ $(sufun-rescue --status) == none ]] && ! ls /boot/loader/entries/sufun-live.conf'
+}
+
+# --- "Windows 파일 가져오기": the test disk had a Windows with known files (qemu-test.sh) ---
+import_checks() {
+  local h=/home/tester r
+  [[ -f /var/lib/sufun-test/import-done ]] || { say "INFO import: no Windows files were brought over in this test"; return 0; }
+  r=$(ls "$h"/Windows*결과.txt "$h"/Windows*result.txt 2>/dev/null | head -n1)
+  check import-result-file      test -n "$r"
+  say "INFO import result: $(tr '\n' '|' < "$r" | cut -c1-600)"
+  check import-desktop-file     bash -c 'cmp -s "/home/tester/바탕화면/메모 한글.txt" <(printf "desktop note\n")'
+  check import-small-file       bash -c '[[ $(cat /home/tester/바탕화면/tiny.txt) == tiny ]]'
+  # (3 MB of a known pattern, made the same way by scripts/ci/make-windows-test-disk.sh)
+  check import-subfolder        bash -c 'cmp -s "/home/tester/문서/보고서/report big.bin" <(yes sufun-import-test | head -c 3000000)'
+  check import-onedrive-folder  test -f "$h/문서/from-onedrive.txt"
+  check import-pictures         test -f "$h/사진/photo.jpg"
+  check import-downloads        test -f "$h/다운로드/setup-file.zip"
+  check import-owner            bash -c '[[ -z $(find /home/tester -xdev ! -user tester | head -n1) ]]'
+  # never brought over: online-only OneDrive files, shortcuts, desktop.ini, AppData, system folders, other users
+  check import-no-online-only   bash -c '! find /home/tester -name "online-only*" | grep -q .'
+  check import-no-shortcuts     bash -c '! find /home/tester \( -iname "*.lnk" -o -iname desktop.ini -o -iname thumbs.db \) | grep -q .'
+  check import-no-appdata       bash -c '! grep -rqs "appdata-secret" /home/tester 2>/dev/null && ! find /home/tester -iname "AppData" | grep -q .'
+  check import-no-other-user    bash -c '! find /home/tester -name "public-file.txt" | grep -q .'
+  check import-result-counts    bash -c 'grep -q "온라인 전용" "$1" && grep -q "바로 가기" "$1"' _ "$r"
+  # (that the copy on the microSD card was removed again is checked by qemu-test.sh on the card image)
+}
+
+# --- "SUFUN 하드웨어 점검" (sufun-hwcheck): report written, nothing private in it ---
+hwcheck_test() {  # hwcheck_test <user>
+  local u=$1 d=/tmp/sufun-hwcheck-test out
+  rm -rf "$d" "$d.zip"
+  out=$(ubus "$u" env WAYLAND_DISPLAY=wayland-0 timeout 300 sufun-hwcheck --auto --out "$d" 2>&1)
+  say "INFO hwcheck: $(grep -E '^SUFUN-HWCHECK' <<< "$out" | tr '\n' ' ')"
+  check hwcheck-report        bash -c 'grep -q "== 끝 / End ==" "$1/report.txt"' _ "$d"
+  check hwcheck-zip           test -s "$d.zip"
+  check hwcheck-sections      bash -c '[[ $(grep -cE "^== [0-9]+\. " "$1/report.txt") -ge 12 ]]' _ "$d"
+  check hwcheck-x86-64-v3     grep -q 'x86-64-v3' "$d/report.txt"
+  say "INFO hwcheck boot entries in the report: $(grep -c 'BootOrder' "$d/report.txt") BootOrder line(s); lines with 'serial': $(grep -ci serial "$d/report.txt")"
+  # privacy: no MAC address, no user name or home folder
+  check hwcheck-no-mac        bash -c '! grep -qiE "([0-9a-f]{2}:){5}[0-9a-f]{2}" "$1/report.txt"' _ "$d"
+  check hwcheck-no-names      bash -c '! grep -qE "(^|[^a-z])$2([^a-z]|\$)|/home/" "$1/report.txt"' _ "$d" "$u"
+  out=$(ubus "$u" env WAYLAND_DISPLAY=wayland-0 timeout 60 sufun-hwcheck --input-test-selfcheck 2>&1)
+  say "INFO hwcheck input test: $(tr '\n' ' ' <<< "$out" | cut -c1-200)"
+  check hwcheck-input-window  grep -q 'SUFUN-INPUT-SELFCHECK: OK' <<< "$out"
+  say "INFO hwcheck summary: $(sed -n '/요약/,/^$/p' "$d/report.txt" | head -n 16 | tr '\n' '|' | cut -c1-700)"
+  rm -rf "$d" "$d.zip"
+}
+
+# --- "복구 부팅 항목" (sufun-rescue) on the microSD install: off and on again ---
+rescue_test() {
+  local e=/efi/loader/entries/sufun-live.conf
+  check rescue-status-on    bash -c '[[ $(sufun-rescue --status) == on ]]'
+  check rescue-user-refused bash -c '! runuser -u tester -- sufun-rescue --off'
+  to_serial sufun-rescue --off
+  check rescue-off          bash -c '[[ ! -e $1 && -f $1.off && $(sufun-rescue --status) == off && $(cat /var/lib/sufun/rescue-state) == off ]]' _ "$e"
+  to_serial sufun-rescue --on
+  check rescue-on-again     bash -c '[[ -f $1 && ! -e $1.off && $(sufun-rescue --status) == on ]]' _ "$e"
+  check rescue-kernel-kept  test -s /efi/EFI/SUFUN/live/vmlinuz-linux-surface
+}
+
+# --- live system on a computer with an installed SUFUN (sufun.test=liveguard) ---
+liveguard_test() {
+  local i
+  for ((i = 0; i < 120; i += 3)); do [[ -e /run/sufun-live-guard/locked || -e /run/sufun-live-guard/open ]] && break; sleep 3; done
+  say "INFO live guard: $(ls /run/sufun-live-guard 2>/dev/null | tr '\n' ' ') $(journalctl -b -u sufun-live-guard -o cat 2>/dev/null | tail -n 2 | tr '\n' ' ')"
+  check liveguard-locked            bash -c '[[ $(cat /run/sufun-live-guard/locked) == tester ]]'
+  check liveguard-no-autologin      bash -c '! grep -rIshE "^User=.+" /etc/sddm.conf /etc/sddm.conf.d /usr/lib/sddm/sddm.conf.d && ! ls /etc/systemd/system/getty@tty1.service.d/autologin.conf'
+  check liveguard-root-locked       bash -c '[[ $(passwd -S root | awk "{print \$2}") == L ]]'
+  check liveguard-no-free-sudo      bash -c '! grep -rIshE "^[^#]*NOPASSWD" /etc/sudoers /etc/sudoers.d && ! runuser -u sufun -- sudo -n true'
+  check liveguard-no-free-pkexec    bash -c '! runuser -u sufun -- pkexec --disable-internal-agent /usr/bin/true'
+  # the installed system's password opens it, a wrong one does not
+  check liveguard-right-password    bash -c 'runuser -u sufun -- sh -c "echo sufun-test | sudo -S -k -p \"\" true"'
+  check liveguard-wrong-password    bash -c '! runuser -u sufun -- sh -c "echo wrong-password | sudo -S -k -p \"\" true"'
+  wait_for 300 greeter_up
+  sleep 15; say "SHOT liveguard-login"
+  check liveguard-login-screen      greeter_up
+  check liveguard-no-desktop        bash -c '! pgrep -u sufun -x plasmashell'
+  # the installed system was only read
+  check liveguard-disk-not-mounted  bash -c '! findmnt -rno SOURCE | grep -q "^/dev/vda"'
+  check liveguard-lock-screen-kept  grep -qx 'Autolock=true' /etc/xdg/kscreenlockerrc
 }
 
 PHASE=/var/lib/sufun-test/restore-phase
@@ -817,14 +939,33 @@ restore_cleanup() {
   check cleanup-btrfs-grown    bash -c 'dev=$(btrfs filesystem show --raw / | awk "/devid/ {print \$4; exit}"); part=$(( $(cat /sys/class/block/${1#/dev/}/size) * 512 )); (( part - dev < 64*1024*1024 ))' _ "$root"
   check cleanup-state-gone     bash -c '! sufun-windows-restore --status'
   say "INFO root now $(part_sectors "$root") sectors (before: $old)"
-  rm -f "$PHASE"
+  # next start (the test wipes the firmware's boot entries first): fallback boot test
+  echo fallback > "$PHASE"
   say "RESTORE-CLEANUP-DONE"
 }
 
 case "$MODE" in
+  liveguard)
+    say "BOOTED liveguard"
+    liveguard_test
+    say "LIVEGUARD-DONE"
+    sleep 3; systemctl poweroff
+    ;;
   winsetup)
     # Started by the firmware entry "Windows Setup" (BootNext) from the WININSTALL
     # partition: only that partition's loader entry has this kernel option.
+    # Restore REHEARSAL disk (made on Windows by sufun-sd-setup.ps1 -RestoreRehearsal;
+    # no "Windows Setup" entry in this VM's firmware yet): make the entry the way
+    # sufun-windows-restore does and print its bytes. The test compares them with
+    # the bytes the Windows script made for the same partition.
+    wp=$(lsblk -pnro NAME,LABEL | awk '$2 == "WININSTALL" {print $1; exit}')
+    if [[ -n $wp ]] && ! efibootmgr | grep -q 'Windows Setup'; then
+      wd=/dev/$(lsblk -no PKNAME "$wp" | head -n1); wn=$(cat "/sys/class/block/${wp#/dev/}/partition")
+      efibootmgr -q --create-only --disk "$wd" --part "$wn" --label "Windows Setup" --loader '\efi\boot\bootx64.efi'
+      wb=$(efibootmgr | sed -n 's/^Boot\([0-9A-Fa-f]\{4\}\)\*\{0,1\} Windows Setup.*/\1/p' | head -n1)
+      say "INFO efibootmgr-entry-hex $(tail -c +5 /sys/firmware/efi/efivars/Boot"$wb"-8be4df61-93ca-11d2-aa0d-00e098032b8c | od -An -v -tx1 | tr -d ' \n')"
+      say "INFO rehearsal partition $wp: $(lsblk -no FSTYPE,SIZE,PARTTYPE "$wp" | tr -s ' ') files: $(m=$(mktemp -d); mount -o ro "$wp" "$m" && ls "$m/sources" | tr '\n' ' '; umount "$m")"
+    fi
     say "WINSETUP-BOOT-OK"
     sleep 3; systemctl poweroff
     ;;
@@ -871,7 +1012,7 @@ case "$MODE" in
     wait_for 600 nm-online -q -t 5
     wait_serial_getty
     if to_serial env SUFUN_AUTO=1 SUFUN_MODE=$imode SUFUN_HOST=sufun SUFUN_USER=tester \
-       SUFUN_PASS=sufun-test SUFUN_TZ=Asia/Seoul SUFUN_LANG=2 \
+       SUFUN_PASS=sufun-test SUFUN_TZ=Asia/Seoul SUFUN_LANG=2 SUFUN_IMPORT=1 \
        /usr/local/bin/sufun-install; then
       say "INSTALL-DONE"
     else
@@ -883,6 +1024,20 @@ case "$MODE" in
     if [[ $(cat "$PHASE" 2>/dev/null) == cleanup ]]; then
       restore_cleanup; sleep 3; systemctl poweroff; exit 0
     fi
+    if [[ $(cat "$PHASE" 2>/dev/null) == fallback ]]; then
+      # The firmware has lost all its boot entries (the test started with fresh
+      # firmware variables): it must still start SUFUN, through \EFI\BOOT\BOOTX64.EFI.
+      say "BOOTED fallback"
+      say "INFO firmware entries now: $(efibootmgr | grep -E '^Boot[0-9A-F]{4}' | cut -c1-60 | tr '\n' '|')"
+      check fallback-no-sufun-entry bash -c '! efibootmgr | grep -qE "^Boot[0-9A-F]{4}[*]? SUFUN([[:space:]]|\$)"'
+      # systemd-boot tells in an EFI variable which file it was started from
+      ldr=$(tr -d '\0' < /sys/firmware/efi/efivars/LoaderImageIdentifier-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f 2>/dev/null | tr -cd '[:print:]')
+      say "INFO boot loader file: $ldr"
+      check fallback-loader-used    bash -c '[[ ${1^^} == *EFI?BOOT?BOOTX64.EFI* ]]' _ "$ldr"
+      rm -f "$PHASE"
+      say "FALLBACK-BOOT-OK"
+      sleep 3; systemctl poweroff; exit 0
+    fi
     say "BOOTED installed"
     say "VERSION $(pacman -Q sufun-base | awk '{print $2}' | sed 's/-[0-9]*$//')"
     if [[ -f /etc/sufun/boot-stage.conf ]]; then
@@ -890,6 +1045,7 @@ case "$MODE" in
     else
       check boot-entry-sufun   grep -q '^title *SUFUN$' /boot/loader/entries/sufun.conf
       check emmc-root-internal bash -c 'r=$(findmnt -no SOURCE / | sed "s/\[.*//"); [[ $r == /dev/vda* ]]'
+      firmware_checks
     fi
     check splash-option      grep -qw splash /proc/cmdline
     check plymouth-theme     bash -c '[[ $(plymouth-set-default-theme) == sufun ]]'
@@ -933,6 +1089,8 @@ case "$MODE" in
       logout_screen tester
       security_installed tester
       host_portscan
+      hwcheck_test tester
+      if [[ -f /etc/sufun/boot-stage.conf ]]; then rescue_test; else import_checks; fi
     else
       say "FAIL desktop-login"
     fi

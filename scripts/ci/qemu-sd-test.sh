@@ -5,7 +5,7 @@
 #   internal.vhdx  = the Surface's internal disk: EFI partition (with \EFI\SUFUN and
 #                    \loader made by the script) + an NTFS "Windows" partition
 #   card.vhdx      = the 32 GiB microSD card: 4 GB SUFUNLIVE partition + free space
-#   bash scripts/ci/qemu-sd-test.sh <vhd-dir> <expected-version> <output-dir>
+#   bash scripts/ci/qemu-sd-test.sh <vhd-dir> <expected-version> <output-dir> [sufun.iso]
 #
 #   Test 6: SD live boot: firmware -> systemd-boot on the internal disk -> kernel ->
 #           live system from the emulated SD card (sdhci-pci + sd-card): LIVE-DESKTOP-OK
@@ -14,6 +14,12 @@
 #           disk) to the desktop and checks itself (kernel updates keep the boot stage in sync)
 #   Afterwards: the internal disk's partition table and the "Windows" partition are
 #   byte-for-byte unchanged.
+#   Test 9: Windows restore REHEARSAL disk (rehearsal.vhdx, made on the Windows runner
+#           by sufun-sd-setup.ps1 -RestoreRehearsal with the dummy Windows ISO): the
+#           firmware starts \efi\boot\bootx64.efi from the FAT32 WININSTALL partition
+#           that Windows made, and the firmware entry bytes the Windows script made
+#           are exactly the bytes Linux's efibootmgr makes for that partition (the
+#           later restore uses efibootmgr). Needs the SUFUN ISO (4th argument).
 #
 # Not testable here: the firmware entry "SUFUN (SD)" (bcdedit, Windows' NVRAM) and the
 # Surface UEFI itself. The firmware entry is emulated by copying the boot menu to the
@@ -23,6 +29,7 @@
 set -uo pipefail
 
 VHD="$(realpath "${1:?vhd dir}")"; WANT="${2:?version}"; OUT="${3:?output dir}"
+ISO="${4:-}"; [[ -n $ISO ]] && ISO="$(realpath "$ISO")"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 mkdir -p "$OUT"; OUT="$(realpath "$OUT")"
 cd "$OUT" || exit 1
@@ -98,6 +105,31 @@ if (( ! fail )); then
     echo "internal disk changed outside the SUFUN boot stage!"; fail=1
   fi
   echo "== boot stage after install:"; mdir -/ -i "$M" ::/EFI/SUFUN ::/loader 2>&1 | grep -vE '^$|Volume|Directory for' | head -30
+fi
+
+# --- test 9: the restore rehearsal disk made on Windows ---
+if [[ -n $ISO && -f $VHD/rehearsal.vhdx ]]; then
+  qemu-img convert -O raw "$VHD/rehearsal.vhdx" rehearsal.img || die "rehearsal.vhdx"
+  echo "== rehearsal disk made by sufun-sd-setup.ps1 -RestoreRehearsal:"; sfdisk -l rehearsal.img
+  SAVED_VARS=$VARS; VARS="$OUT/reh-vars.fd"; cp "$VARS_SRC" "$VARS"
+  # bootindex: the firmware tries this disk first; the SUFUN ISO is only there as
+  # the root file system of the test kernel that stands in for Windows Setup
+  run_vm 9-rehearsal 900 'SUFUN-TEST: WINSETUP-BOOT-OK' 'SUFUN-TEST: BOOTED' \
+    -drive file=rehearsal.img,if=none,id=rdisk,format=raw -device virtio-blk-pci,drive=rdisk,bootindex=1 \
+    -cdrom "$ISO" || fail=1
+  VARS=$SAVED_VARS
+  win=$(tr -d '[:space:]' < "$VHD/rehearsal-entry.hex" 2>/dev/null | tr 'A-F' 'a-f')
+  lin=$(grep -ao 'efibootmgr-entry-hex [0-9a-f]*' 9-rehearsal-serial.log | head -n1 | awk '{print $2}')
+  echo "entry made by the Windows script: $win"
+  echo "entry made by efibootmgr:         $lin"
+  if [[ -n $win && $win == "$lin" ]]; then
+    echo "OK: the rehearsal's firmware entry is byte-for-byte the entry efibootmgr makes"
+  else
+    echo "the rehearsal's firmware entry differs from efibootmgr's"; fail=1
+  fi
+  rm -f rehearsal.img
+elif [[ ${GITHUB_ACTIONS:-} == true ]]; then
+  echo "restore rehearsal disk or SUFUN ISO missing"; fail=1
 fi
 
 rm -f internal.img card.img bootx64.efi e.conf ./*.sock

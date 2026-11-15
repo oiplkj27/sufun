@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=SUFUN Hardware Check
+Name[ko]=SUFUN 하드웨어 점검
+Comment=Test touch, pen, cameras, sleep, Wi-Fi and battery, and write a report you can share
+Comment[ko]=터치, 펜, 카메라, 절전, Wi-Fi, 배터리를 점검하고 공유할 수 있는 보고서를 만듭니다
+Exec=sufun-hwcheck
+Icon=sufun-logo
+Terminal=false
+Categories=System;

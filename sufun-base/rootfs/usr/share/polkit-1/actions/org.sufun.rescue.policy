@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!-- Lets "pkexec /usr/bin/sufun-rescue" ask for the admin password with a clear message. -->
+<policyconfig>
+  <vendor>SUFUN</vendor>
+  <action id="org.sufun.rescue">
+    <description>Switch the microSD rescue boot entry on or off</description>
+    <description xml:lang="ko">복구 부팅 항목 켜기/끄기</description>
+    <message>Changing the boot menu requires the administrator password.</message>
+    <message xml:lang="ko">부팅 메뉴를 바꾸려면 관리자 암호가 필요합니다.</message>
+    <icon_name>sufun-logo</icon_name>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/sufun-rescue</annotate>
+  </action>
+</policyconfig>

@@ -1,0 +1,16 @@
+# Live ISO only. Decides, before anyone can log in, whether this live system is
+# password-less (no SUFUN installed here) or asks for the installed SUFUN's
+# administrator password. See /usr/local/bin/sufun-live-guard.
+[Unit]
+Description=SUFUN live: ask for the installed system's password if SUFUN is installed here
+After=sufun-live-user.service local-fs.target systemd-udevd.service
+Wants=sufun-live-user.service
+Before=display-manager.service sddm.service sufun-welcome.service systemd-user-sessions.service getty.target getty@tty1.service serial-getty@ttyS0.service sufun-selftest.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/sufun-live-guard
+
+[Install]
+WantedBy=multi-user.target

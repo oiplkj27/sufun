@@ -1,0 +1,922 @@
+#!/usr/bin/env bash
+# SUFUN 하드웨어 점검: one click collects a report about the real hardware
+# (touch, pen, Type Cover, cameras, sleep, Wi-Fi, battery, ...) that you can
+# upload when you ask for help. Runs as the normal user, changes nothing.
+#
+#   sufun-hwcheck                        windows (Korean): explains, runs the two
+#                                        guided tests (input, lid/sleep), collects
+#   sufun-hwcheck --auto [--out DIR]     no questions, no windows, no suspend
+#                                        (also works without a desktop; used by CI)
+#   sufun-hwcheck --input-test-selfcheck CI: loads the input test window, which
+#                                        closes itself after 3 s; exit 0 = QML is fine
+#
+# Result: ~/sufun-hwcheck-YYYYMMDD-HHMM/report.txt (+ camera pictures) and the
+# same folder as ONE file ~/sufun-hwcheck-YYYYMMDD-HHMM.zip.
+# Lines for scripts (stdout):  SUFUN-HWCHECK-REPORT: <path>   SUFUN-HWCHECK-ZIP: <path|none ...>
+#                              SUFUN-HWCHECK-SUMMARY: ok=N check=N skip=N
+#
+# Privacy: the report is meant to be public. Not collected: Wi-Fi names and
+# passwords, NetworkManager connection files, DMI/disk serial numbers and UUIDs,
+# machine-id. A last filter (privacy_filter) also removes MAC addresses, the
+# host name, the user name, the home path, IP addresses and UUIDs from the text.
+set -uo pipefail
+
+T="SUFUN 하드웨어 점검"
+QML_FILE=/usr/share/sufun/hwcheck/InputTest.qml
+MODE=gui
+OUT=
+while (( $# )); do
+  case "$1" in
+    --auto)                  MODE=auto ;;
+    --out)                   OUT=${2:-}; shift ;;
+    --out=*)                 OUT=${1#--out=} ;;
+    --input-test-selfcheck)  MODE=selfcheck ;;
+    -h|--help)               sed -n '2,20p' "$0"; exit 0 ;;
+    *)                       echo "알 수 없는 옵션: $1 (--help)" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+have() { command -v "$1" >/dev/null 2>&1; }
+# Every command gets a time limit, so one hanging tool cannot block the report.
+have timeout || timeout() { shift; "$@"; }
+
+# =========================================================================
+# The input test window (QML). Prints "SUFUN-INPUT pointer=.. touch=.. pen=.. key=.."
+# =========================================================================
+find_qml() {
+  local q
+  for q in qml6 /usr/lib/qt6/bin/qml qml; do
+    have "$q" && { command -v "$q"; return 0; }
+  done
+  return 1
+}
+# run_input_test <seconds> [argument for the window]: prints everything the window wrote
+run_input_test() {
+  local qml
+  qml=$(find_qml) || { echo "qml6: 없음 / not installed"; return 127; }
+  [[ -f $QML_FILE ]] || { echo "$QML_FILE: 없음 / missing"; return 1; }
+  # QT_FORCE_STDERR_LOGGING: Qt would otherwise write to the journal, not to us
+  export QT_MESSAGE_PATTERN='%{message}' QT_FORCE_STDERR_LOGGING=1
+  if compgen -G '/usr/lib/qt6/qml/QtQuick/Controls/FluentWinUI3/*' >/dev/null; then
+    export QT_QUICK_CONTROLS_STYLE=FluentWinUI3
+  else
+    export QT_QUICK_CONTROLS_STYLE=Basic
+  fi
+  # No desktop (CI console): draw into memory instead of a screen
+  [[ -n ${WAYLAND_DISPLAY:-}${DISPLAY:-} ]] || export QT_QPA_PLATFORM=offscreen
+  if [[ -n ${2:-} ]]; then
+    timeout "$1" "$qml" "$QML_FILE" -- "$2" 2>&1
+  else
+    timeout "$1" "$qml" "$QML_FILE" 2>&1
+  fi
+}
+
+if [[ $MODE == selfcheck ]]; then
+  log=$(run_input_test 30 selfcheck=1); rc=$?
+  printf '%s\n' "$log"
+  if grep -qE '^SUFUN-INPUT pointer=[01] touch=[01] pen=[01] key=[01]$' <<< "$log"; then
+    echo "SUFUN-INPUT-SELFCHECK: OK"
+    exit 0
+  fi
+  echo "SUFUN-INPUT-SELFCHECK: FAILED (exit $rc)"
+  exit 1
+fi
+
+# =========================================================================
+# Setup
+# =========================================================================
+STAMP=$(date +%Y%m%d-%H%M)
+[[ -n $OUT ]] || OUT="${HOME:-/tmp}/sufun-hwcheck-$STAMP"
+OUT=${OUT%/}
+mkdir -p "$OUT" || { echo "오류: 폴더를 만들 수 없습니다: $OUT" >&2; exit 1; }
+TMP=$(mktemp -d) || { echo "오류: 임시 폴더를 만들 수 없습니다." >&2; exit 1; }
+trap 'rm -rf "$TMP"' EXIT
+BODY=$TMP/body.txt
+: > "$BODY"
+
+IS_LINUX=0; [[ $(uname -s 2>/dev/null) == Linux ]] && IS_LINUX=1
+# Root is never required. It is used only where it already works without a password.
+HAVE_SUDO=0
+if (( IS_LINUX )) && have sudo && sudo -n true 2>/dev/null; then HAVE_SUDO=1; fi
+# Desktop session (needed for KWin, PipeWire, portal, System Monitor items)
+HAVE_DISPLAY=0; [[ -n ${WAYLAND_DISPLAY:-}${DISPLAY:-} ]] && HAVE_DISPLAY=1
+HAVE_SESSION=0
+if have busctl && [[ -n ${DBUS_SESSION_BUS_ADDRESS:-} || -S ${XDG_RUNTIME_DIR:-/nonexistent}/bus ]]; then
+  HAVE_SESSION=1
+fi
+if [[ $MODE == gui ]] && { (( ! HAVE_DISPLAY )) || ! have kdialog; }; then
+  echo "화면 또는 kdialog가 없어 자동 모드(--auto)로 진행합니다." >&2
+  MODE=auto
+fi
+NO_SESSION="건너뜀: 데스크톱 세션이 없음 / skipped: no desktop session"
+
+# --- section bookkeeping: status per section for the summary table ---
+declare -A ST NOTE TITLE
+CUR=0
+sec() {  # sec <number> <title>
+  CUR=$1; TITLE[$1]=$2; ST[$1]=OK; NOTE[$1]=
+  printf '\n== %s. %s ==\n' "$1" "$2"
+}
+check() {  # something in this section needs a look
+  ST[$CUR]="확인 필요"
+  NOTE[$CUR]="${NOTE[$CUR]:+${NOTE[$CUR]}; }$1"
+  echo "  >> 확인 필요: $1"
+}
+skip() {   # the whole section could not be tested here
+  [[ ${ST[$CUR]} == OK ]] && ST[$CUR]="건너뜀"
+  NOTE[$CUR]="${NOTE[$CUR]:+${NOTE[$CUR]}; }$1"
+  echo "  >> 건너뜀: $1"
+}
+
+# --- small helpers ---
+# show <seconds> <command...>: the command's output (indented), or a line saying why not
+show() {
+  local t=$1 o rc; shift
+  echo "\$ $*"
+  if ! have "$1"; then echo "  ($1: 없음 / not installed)"; return 127; fi
+  o=$(LC_ALL=C timeout "$t" "$@" 2>&1); rc=$?
+  [[ -n $o ]] && printf '%s\n' "$o" | sed 's/^/  /'
+  (( rc == 0 )) || echo "  (실패 / failed: exit $rc)"
+  return $rc
+}
+rd() { cat "$1" 2>/dev/null | tr -d '\0' | head -n1; }          # first line of a file, or nothing
+val() { local v; v=$(rd "$1"); echo "${v:-(없음)}"; }
+svc() {  # svc <unit>: "active/enabled" state in one line
+  if ! have systemctl; then echo "  $1: (systemctl 없음)"; return 1; fi
+  local a e
+  a=$(LC_ALL=C timeout 10 systemctl is-active "$1" 2>/dev/null | head -n1)
+  e=$(LC_ALL=C timeout 10 systemctl is-enabled "$1" 2>/dev/null | head -n1)
+  echo "  $1: ${a:-unknown} (${e:-unknown})"
+  [[ $a == active ]]
+}
+# Kernel log of this boot, once. Members of "wheel" can read it with journalctl;
+# dmesg usually needs root, so that is only the fallback.
+KLOG=$TMP/klog.txt
+KLOG_HOW="없음"
+get_klog() {
+  : > "$KLOG"
+  if have journalctl; then
+    LC_ALL=C timeout 30 journalctl -k -b -o short-monotonic --no-pager 2>/dev/null \
+      | sed -E 's/^(\[[ 0-9.]+\]) [^ ]+ kernel: /\1 /' > "$KLOG"
+    [[ -s $KLOG ]] && KLOG_HOW="journalctl -k -b"
+  fi
+  if [[ ! -s $KLOG ]] && have dmesg; then
+    if (( HAVE_SUDO )); then
+      LC_ALL=C timeout 30 sudo -n dmesg > "$KLOG" 2>/dev/null
+    else
+      LC_ALL=C timeout 30 dmesg > "$KLOG" 2>/dev/null
+    fi
+    [[ -s $KLOG ]] && KLOG_HOW="dmesg"
+  fi
+  return 0
+}
+klog_grep() {  # klog_grep <pattern> <last N lines>
+  if [[ ! -s $KLOG ]]; then
+    echo "  (커널 로그를 읽을 수 없음 / kernel log not readable as this user)"
+    return 1
+  fi
+  local o
+  o=$(grep -iE "$1" "$KLOG" | tail -n "$2")
+  if [[ -n $o ]]; then printf '%s\n' "$o" | sed 's/^/  /'; else echo "  (해당 줄 없음 / no matching lines)"; fi
+}
+user_prop() {  # user_prop <service> <path> <interface> <property>: value on the session bus
+  LC_ALL=C timeout 10 busctl --user --timeout=5 get-property "$@" 2>/dev/null
+}
+
+# =========================================================================
+# Guided tests (window mode only); their results are used by the sections below
+# =========================================================================
+INPUT_RESULT=            # the "SUFUN-INPUT ..." line
+INPUT_LOG=
+SLEEP_TEST=none          # none | skipped | done
+SLEEP_SINCE=
+SLEEP_STATS_BEFORE=
+
+guided_input_test() {
+  INPUT_LOG=$(run_input_test 90)
+  INPUT_RESULT=$(grep -E '^SUFUN-INPUT ' <<< "$INPUT_LOG" | tail -n1)
+}
+guided_sleep_test() {
+  SLEEP_SINCE=$(date '+%Y-%m-%d %H:%M:%S')
+  SLEEP_STATS_BEFORE=$(rd /sys/power/suspend_stats/success)
+  if kdialog --title "$T" --yes-label "확인" --no-label "건너뛰기" --yesno \
+"절전 테스트 / Sleep test
+
+덮개를 닫고 10초 기다린 뒤 다시 여세요. 화면이 켜지면 [확인]을 누르세요.
+(Type Cover가 없으면 전원 버튼을 짧게 눌러 화면을 끄고, 10초 뒤 다시 누르세요.)
+
+Close the lid, wait 10 seconds, open it again, then press [확인]."; then
+    SLEEP_TEST=done
+    sleep 3      # let the log catch up after waking
+  else
+    SLEEP_TEST=skipped
+  fi
+}
+
+# =========================================================================
+# Sections
+# =========================================================================
+s1_system() {
+  sec 1 "시스템 / System"
+  echo "커널 / kernel: $(uname -r 2>/dev/null)"
+  echo "패키지 / packages:"
+  local p v
+  for p in linux-surface sufun-base libcamera iptsd mesa plasma-desktop; do
+    if have pacman; then
+      v=$(LC_ALL=C timeout 20 pacman -Q "$p" 2>/dev/null) && echo "  $v" || echo "  $p: 설치 안 됨 / not installed"
+    else
+      echo "  $p: (pacman 없음)"
+    fi
+  done
+  echo "기기 / device:"
+  local f
+  for f in sys_vendor product_name bios_version bios_date; do     # never *_serial, *_uuid
+    echo "  $f: $(val /sys/class/dmi/id/$f)"
+  done
+  if [[ -d /run/archiso ]]; then
+    echo "실행 방식 / mode: 라이브 시스템 (설치 전) / live system"
+  else
+    echo "실행 방식 / mode: 설치된 시스템 / installed system"
+  fi
+  # Which disk holds "/": internal eMMC or the microSD card
+  local src= disk= kind
+  have findmnt && src=$(LC_ALL=C findmnt -no SOURCE / 2>/dev/null | sed 's/\[.*//')
+  if [[ -b $src ]] && have lsblk; then
+    disk=$(LC_ALL=C lsblk -no PKNAME "$src" 2>/dev/null | head -n1)
+    [[ -n $disk ]] || disk=${src#/dev/}
+  fi
+  if [[ $disk == mmcblk* ]]; then
+    case $(rd "/sys/block/$disk/device/type") in
+      MMC) kind="내부 저장장치 (eMMC) / internal eMMC" ;;
+      SD)  kind="microSD 카드 / microSD card" ;;
+      *)   kind="알 수 없음 / unknown mmc type" ;;
+    esac
+    echo "루트 장치 / root device: $disk - $kind"
+  elif [[ -n $disk ]]; then
+    echo "루트 장치 / root device: $disk (mmc 아님 / not an mmc disk)"
+  else
+    echo "루트 장치 / root device: ${src:-알 수 없음} (디스크 아님 / not a disk, e.g. live system)"
+  fi
+  if [[ -r /proc/cmdline ]]; then
+    echo "커널 옵션 / kernel command line:"
+    sed -E 's/([A-Za-z]*UUID=)[^ ]*/\1…/Ig' /proc/cmdline | sed 's/^/  /'
+  else
+    echo "커널 옵션: (/proc/cmdline 없음)"
+  fi
+  (( IS_LINUX )) || skip "Linux가 아님 / not Linux"
+}
+
+s2_x86() {
+  sec 2 "x86-64-v3 (CPU 수준 / CPU level)"
+  local ld=/usr/lib/ld-linux-x86-64.so.2 o
+  if [[ ! -x $ld ]]; then skip "$ld 없음"; return; fi
+  o=$(LC_ALL=C timeout 10 "$ld" --help 2>/dev/null | grep -E '^ *x86-64-v[234]')
+  if [[ -n $o ]]; then printf '%s\n' "$o" | sed 's/^ */  /'; else echo "  (x86-64-v 줄 없음)"; fi
+  grep -qE 'x86-64-v3 \(supported' <<< "$o" || check "x86-64-v3 지원이 확인되지 않음 / x86-64-v3 not reported as supported"
+}
+
+s3_input() {
+  sec 3 "입력 장치 / Input devices"
+  local f=/proc/bus/input/devices list
+  if [[ ! -r $f ]]; then
+    skip "$f 없음"
+  else
+    # One line per device: bus:vendor:product | kind | name | handlers | switch bits.
+    # (The "U: Uniq=" field can hold an address, so it is not printed.)
+    list=$(awk '
+      function flush() {
+        if (name != "") printf "%s|%s|%s|%s\n", id, name, handlers, sw
+        id = name = handlers = sw = ""
+      }
+      /^I:/ { v = $0; sub(/.*Vendor=/, "", v); sub(/ .*/, "", v)
+              p = $0; sub(/.*Product=/, "", p); sub(/ .*/, "", p); id = tolower(v ":" p) }
+      /^N: Name=/ { name = $0; sub(/^N: Name="/, "", name); sub(/"$/, "", name) }
+      /^H: Handlers=/ { handlers = $0; sub(/^H: Handlers=/, "", handlers); sub(/ +$/, "", handlers) }
+      /^B: SW=/ { sw = $0; sub(/^B: SW=/, "", sw) }
+      /^$/ { flush() }
+      END { flush() }' "$f")
+    local id name handlers sw ev kind props
+    local n_touchpad=0 n_touch=0 n_pen=0 n_cover=0 n_tabletsw=0 n=0
+    echo "장치 목록 / devices (vendor:product, 종류/kind, 이름/name, handlers):"
+    while IFS='|' read -r id name handlers sw; do
+      [[ -n $name ]] || continue
+      n=$(( n + 1 ))
+      kind=
+      # What udev (and so libinput/KWin) thinks this device is
+      ev=$(grep -oE 'event[0-9]+' <<< "$handlers" | head -n1)
+      props=
+      if [[ -n $ev ]] && have udevadm; then
+        props=$(LC_ALL=C timeout 5 udevadm info -q property -n "/dev/input/$ev" 2>/dev/null | grep -E '^ID_INPUT_[A-Z_]+=1')
+      fi
+      if [[ -n $props ]]; then
+        grep -q '^ID_INPUT_TOUCHPAD=' <<< "$props" && { kind+="touchpad "; n_touchpad=$(( n_touchpad + 1 )); }
+        grep -q '^ID_INPUT_TOUCHSCREEN=' <<< "$props" && { kind+="touchscreen "; n_touch=$(( n_touch + 1 )); }
+        grep -q '^ID_INPUT_TABLET=' <<< "$props" && { kind+="pen "; n_pen=$(( n_pen + 1 )); }
+        grep -q '^ID_INPUT_KEYBOARD=' <<< "$props" && kind+="keyboard "
+        grep -q '^ID_INPUT_MOUSE=' <<< "$props" && kind+="mouse "
+        grep -q '^ID_INPUT_SWITCH=' <<< "$props" && kind+="switch "
+      else
+        # No udev answer: guess from the name
+        case ${name,,} in
+          *touchpad*)            kind+="touchpad? "; n_touchpad=$(( n_touchpad + 1 )) ;;
+          *stylus*|*pen*)        kind+="pen? "; n_pen=$(( n_pen + 1 )) ;;
+          *touchscreen*|*touch*) kind+="touchscreen? "; n_touch=$(( n_touch + 1 )) ;;
+        esac
+      fi
+      # Tablet-mode switch: bit 1 (SW_TABLET_MODE) of the switch bitmask
+      if [[ $sw =~ ^[0-9A-Fa-f]+$ ]] && (( (16#$sw & 2) != 0 )); then
+        kind+="tablet-mode-switch "; n_tabletsw=$(( n_tabletsw + 1 ))
+      fi
+      [[ $id == 045e:09b5 ]] && { kind+="TypeCover "; n_cover=$(( n_cover + 1 )); }
+      printf '  %s  [%s]  %s  (%s)%s\n' "$id" "${kind% }" "$name" "$handlers" "${sw:+  SW=$sw}"
+    done <<< "$list"
+    yn() { (( $1 > 0 )) && echo "있음 / found ($1)" || echo "없음 / not found"; }
+    echo "요약 / summary ($n devices):"
+    echo "  터치패드 / touchpad:              $(yn $n_touchpad)"
+    echo "  터치 스크린 / touchscreen:        $(yn $n_touch)"
+    echo "  펜 / pen (stylus):                $(yn $n_pen)"
+    echo "  Type Cover 키보드 (045e:09b5):    $(yn $n_cover)"
+    echo "  태블릿 모드 스위치 / tablet switch: $(yn $n_tabletsw)"
+    (( n_touch > 0 )) || check "터치 스크린 장치가 보이지 않음 / no touchscreen device"
+    (( n_cover > 0 )) || echo "  (Type Cover가 붙어 있지 않으면 정상입니다 / normal when the cover is detached)"
+  fi
+
+  echo "KWin이 보는 장치 / devices seen by KWin:"
+  if (( ! HAVE_SESSION )); then
+    echo "  ($NO_SESSION)"
+  else
+    local paths p out k v
+    paths=$(LC_ALL=C timeout 10 busctl --user --list tree org.kde.KWin 2>/dev/null | grep -E '^/org/kde/KWin/InputDevice/[^/]+$')
+    if [[ -z $paths ]]; then
+      echo "  (KWin에서 장치 목록을 받지 못함 / no answer from org.kde.KWin)"
+    else
+      while read -r p; do
+        out=$(user_prop org.kde.KWin "$p" org.kde.KWin.InputDevice name | sed -E 's/^s "(.*)"$/\1/')
+        out="${p##*/}  ${out:-?} :"
+        for k in enabled keyboard pointer touchpad touch tabletTool tabletModeSwitch lidSwitch; do
+          v=$(user_prop org.kde.KWin "$p" org.kde.KWin.InputDevice "$k")
+          [[ $v == "b true" ]] && out+=" $k"
+        done
+        echo "  $out"
+      done <<< "$paths"
+    fi
+    # Tablet mode now (object path differs between KWin versions: try both)
+    local tm=
+    for p in /org/kde/KWin /org/kde/KWin/TabletModeManager; do
+      tm=$(user_prop org.kde.KWin "$p" org.kde.KWin.TabletModeManager tabletMode) && [[ -n $tm ]] && break
+    done
+    echo "지금 태블릿 모드 / tablet mode now: ${tm:-(알 수 없음 / unknown)}"
+    for p in /org/kde/KWin /org/kde/KWin/TabletModeManager; do
+      tm=$(user_prop org.kde.KWin "$p" org.kde.KWin.TabletModeManager tabletModeAvailable) && [[ -n $tm ]] && break
+    done
+    echo "태블릿 모드 가능 / tablet mode available: ${tm:-(알 수 없음 / unknown)}"
+  fi
+  echo "서비스 / service:"
+  svc sufun-typecover.service || true
+
+  echo "직접 해 보는 입력 테스트 / guided input test:"
+  if [[ $MODE != gui ]]; then
+    echo "  (건너뜀: 자동 모드 / skipped in --auto)"
+  elif [[ -z $INPUT_RESULT ]]; then
+    echo "  (결과 없음 / no result from the test window)"
+    [[ -n $INPUT_LOG ]] && printf '%s\n' "$INPUT_LOG" | tail -n 10 | sed 's/^/  | /'
+    check "입력 테스트 창이 결과를 내지 않음 / input test window gave no result"
+  else
+    echo "  $INPUT_RESULT"
+    local what label bad=
+    for what in pointer touch pen key; do
+      case $what in
+        pointer) label="터치패드/마우스 포인터" ;; touch) label="터치 스크린" ;;
+        pen) label="펜" ;; key) label="키보드" ;;
+      esac
+      if grep -q " $what=1" <<< "$INPUT_RESULT "; then
+        echo "  $label: 확인됨 / worked"
+      else
+        echo "  $label: 입력 없음 / no event seen"
+        [[ $what == pen ]] || bad+="$label "      # a pen is optional
+      fi
+    done
+    [[ -z $bad ]] || check "입력 없음 / no event: ${bad% }"
+  fi
+}
+
+s4_accel() {
+  sec 4 "가속도 센서 (화면 회전) / Accelerometer"
+  local has ori d any=0
+  if have busctl; then
+    has=$(LC_ALL=C timeout 10 busctl --timeout=5 get-property net.hadess.SensorProxy /net/hadess/SensorProxy net.hadess.SensorProxy HasAccelerometer 2>&1)
+    ori=$(LC_ALL=C timeout 10 busctl --timeout=5 get-property net.hadess.SensorProxy /net/hadess/SensorProxy net.hadess.SensorProxy AccelerometerOrientation 2>&1)
+    echo "  HasAccelerometer: $has"
+    echo "  AccelerometerOrientation: $ori"
+    echo "  (방향은 프로그램이 센서를 쓰는 동안만 채워집니다 / the orientation is only filled while a program uses the sensor)"
+    case $has in
+      "b true") ;;
+      "b false") check "iio-sensor-proxy가 가속도 센서를 찾지 못함 / no accelerometer found" ;;
+      *) skip "iio-sensor-proxy가 응답하지 않음 / no answer from iio-sensor-proxy" ;;
+    esac
+  else
+    skip "busctl 없음"
+  fi
+  echo "IIO 장치 / IIO devices:"
+  for d in /sys/bus/iio/devices/*/name; do
+    [[ -r $d ]] || continue
+    any=1
+    echo "  $(basename "$(dirname "$d")"): $(rd "$d")"
+  done
+  (( any )) || echo "  (없음 / none)"
+}
+
+s5_cameras() {
+  sec 5 "카메라 / Cameras"
+  local list ids id n=0 ok=0
+  if ! have cam; then
+    echo "\$ cam --list"
+    echo "  (cam: 없음 / not installed, 패키지 libcamera-tools)"
+    skip "cam 없음 / cam not installed"
+  else
+    list=$(LC_ALL=C timeout 30 cam --list 2>&1)
+    echo "\$ cam --list"
+    printf '%s\n' "$list" | grep -vE '^\[[0-9:.]+\] .* (INFO|DEBUG) ' | sed 's/^/  /'
+    ids=$(grep -oE '^[0-9]+: ' <<< "$list" | tr -d ': ')
+    n=$(grep -c . <<< "$ids")
+    echo "카메라 수 / cameras found: $n"
+    # Without cameras the frame test is still tried once (it fails quickly) for its message.
+    [[ -n $ids ]] || ids=1
+    for id in $ids; do
+      capture_frame "$id" && ok=$(( ok + 1 ))
+    done
+    if (( n == 0 )); then
+      check "카메라가 하나도 보이지 않음 / no camera listed"
+    elif (( ok < n )); then
+      check "사진을 찍지 못한 카메라가 있음 ($ok/$n) / frame capture failed"
+    fi
+  fi
+
+  echo "커널 로그 (IPU3, 센서) / kernel log (last 40, from $KLOG_HOW):"
+  klog_grep 'ipu3|cio2|ov5693|ov8865|ov7251|int3472' 40
+
+  echo "PipeWire 카메라 / PipeWire camera nodes:"
+  if (( ! HAVE_SESSION )); then
+    echo "  ($NO_SESSION)"
+  else
+    if have pw-dump; then
+      echo "  Video/Source 노드 수 / nodes: $(LC_ALL=C timeout 15 pw-dump 2>/dev/null | grep -cE '"media\.class": *"Video/Source"')"
+    else
+      echo "  (pw-dump: 없음)"
+    fi
+    if have wpctl; then
+      # Only the "Video" part of wpctl status (devices and sources)
+      LC_ALL=C timeout 15 wpctl status 2>/dev/null | awk '/^Video/ { on = 1 } /^Settings/ { on = 0 } on' | sed 's/^/  /'
+    else
+      echo "  (wpctl: 없음)"
+    fi
+    local portal
+    portal=$(user_prop org.freedesktop.portal.Desktop /org/freedesktop/portal/desktop org.freedesktop.portal.Camera IsCameraPresent)
+    echo "포털 / portal IsCameraPresent: ${portal:-(응답 없음 / no answer)}"
+  fi
+}
+# capture_frame <camera number>: one test picture into $OUT. Returns 0 when a frame was saved.
+capture_frame() {
+  local id=$1 base="$OUT/camera-$1" log rc f magic size
+  echo "카메라 $id 사진 한 장 / one frame from camera $id:"
+  # 1) PPM (cam 0.4 and newer write a PPM when the name ends in .ppm; needs BGR888)
+  rm -f "$base".* 2>/dev/null
+  log=$(LC_ALL=C timeout 20 cam --camera "$id" --capture=1 -s width=1280,height=720,pixelformat=BGR888 --file="$base.ppm" 2>&1); rc=$?
+  f=$(ls "$base"*.ppm 2>/dev/null | head -n1)
+  magic=; [[ -s $f ]] && magic=$(head -c 2 "$f" 2>/dev/null | tr -d '\0')
+  if [[ $magic == P6 ]]; then
+    [[ $f == "$base.ppm" ]] || mv "$f" "$base.ppm"
+    echo "  PPM 저장됨 / saved: camera-$id.ppm ($(head -n 3 "$base.ppm" | tr '\n' ' ' | cut -c1-40))"
+    to_jpeg "$id" -i "$base.ppm"
+    return 0
+  fi
+  echo "  PPM으로 찍지 못함 (exit $rc), 원본 형식으로 다시 시도 / no PPM, trying a raw NV12 frame"
+  printf '%s\n' "$log" | grep -vE ' (INFO|DEBUG) ' | tail -n 6 | sed 's/^/  | /'
+  rm -f "$base"*.ppm 2>/dev/null
+  # 2) raw frame in NV12, the format the IPU3 cameras deliver
+  log=$(LC_ALL=C timeout 20 cam --camera "$id" --capture=1 -s width=1280,height=720,pixelformat=NV12 --file="$base.raw" 2>&1); rc=$?
+  f=$(ls "$base"*.raw 2>/dev/null | head -n1)
+  if [[ -s $f ]]; then
+    [[ $f == "$base.raw" ]] || mv "$f" "$base.raw"
+    size=$(wc -c < "$base.raw" | tr -d ' ')
+    echo "  PPM이 아닌 원본으로 저장됨 / saved as raw (not PPM): camera-$id.raw, $size bytes"
+    if (( size == 1280 * 720 * 3 / 2 )); then
+      echo "  형식 / format: NV12 1280x720"
+      to_jpeg "$id" -f rawvideo -pixel_format nv12 -video_size 1280x720 -i "$base.raw"
+    else
+      echo "  (크기가 NV12 1280x720과 달라 JPEG로 바꾸지 않음 / size is not NV12 1280x720, kept as raw)"
+      printf '%s\n' "$log" | grep -iE 'stream|[0-9]+x[0-9]+' | tail -n 4 | sed 's/^/  | /'
+    fi
+    return 0
+  fi
+  echo "  실패 / failed (exit $rc$( (( rc == 124 )) && echo ', 20초 시간 초과 / timeout'))"
+  printf '%s\n' "$log" | grep -vE ' (INFO|DEBUG) ' | tail -n 8 | sed 's/^/  | /'
+  rm -f "$base".* 2>/dev/null
+  return 1
+}
+to_jpeg() {  # to_jpeg <camera number> <ffmpeg input options...>: smaller file for uploading
+  local id=$1; shift
+  if ! have ffmpeg; then
+    echo "  (ffmpeg 없음: JPEG로 바꾸지 않음 / no ffmpeg, not converted)"
+    return 0
+  fi
+  if timeout 30 ffmpeg -nostdin -loglevel error -y "$@" -frames:v 1 "$OUT/camera-$id.jpg" >/dev/null 2>&1 \
+     && [[ -s $OUT/camera-$id.jpg ]]; then
+    echo "  JPEG: camera-$id.jpg (원본은 지움 / the big original was removed)"
+    rm -f "$OUT/camera-$id.ppm" "$OUT/camera-$id.raw"
+  else
+    rm -f "$OUT/camera-$id.jpg"
+    echo "  (ffmpeg 변환 실패: 원본을 그대로 둠 / conversion failed, original kept)"
+  fi
+  return 0
+}
+
+s6_sleep() {
+  sec 6 "덮개와 절전 / Lid and sleep"
+  local f any=0
+  echo "/sys/power/mem_sleep: $(val /sys/power/mem_sleep)"
+  echo "덮개 / lid:"
+  for f in /proc/acpi/button/lid/*/state; do
+    [[ -r $f ]] || continue
+    any=1
+    echo "  $(basename "$(dirname "$f")"): $(rd "$f" | tr -s ' ')"
+  done
+  (( any )) || echo "  (덮개 스위치 없음 / no lid switch)"
+  echo "/proc/acpi/wakeup:"
+  if [[ -r /proc/acpi/wakeup ]]; then sed 's/^/  /' /proc/acpi/wakeup; else echo "  (없음)"; fi
+  echo "logind 덮개 설정 / lid settings:"
+  if have systemd-analyze; then
+    f=$(LC_ALL=C timeout 15 systemd-analyze cat-config systemd/logind.conf 2>/dev/null | grep -i lid | grep -v '^ *#')
+    if [[ -n $f ]]; then printf '%s\n' "$f" | sed 's/^/  /'; else echo "  (따로 정한 값 없음: 기본값 / defaults)"; fi
+  else
+    echo "  (systemd-analyze 없음)"
+  fi
+  [[ -e /sys/power/mem_sleep ]] || skip "/sys/power/mem_sleep 없음"
+
+  echo "직접 해 보는 절전 테스트 / guided sleep test:"
+  case $SLEEP_TEST in
+    none)    echo "  (건너뜀: 자동 모드 / skipped in --auto)"; return ;;
+    skipped) echo "  (사용자가 건너뜀 / skipped by the user)"; return ;;
+  esac
+  if ! have journalctl; then
+    echo "  (journalctl 없음: 로그를 볼 수 없음)"; return
+  fi
+  # Kernel lines since the test began: "<unix time> <message>"
+  local lines t_in t_out after
+  lines=$(LC_ALL=C timeout 30 journalctl -k -b --since "$SLEEP_SINCE" -o short-unix --no-pager 2>/dev/null \
+    | sed -E 's/^([0-9.]+) [^ ]+ kernel: /\1 /' \
+    | grep -E 'PM: suspend|PM: resume|s2idle|ACPI: PM|wakeup|Lid')
+  if [[ -n $lines ]]; then printf '%s\n' "$lines" | tail -n 40 | sed 's/^/  /'; else echo "  (해당 커널 로그 없음 / no matching kernel lines)"; fi
+  # What logind and systemd-sleep said (lid closed/opened, entering sleep)
+  LC_ALL=C timeout 30 journalctl -b --since "$SLEEP_SINCE" -o short-unix --no-pager \
+      -t systemd-logind -t systemd-sleep 2>/dev/null \
+    | sed -E 's/^([0-9.]+) [^ ]+ /\1 /' | grep -iE 'lid|sleep|suspend' | tail -n 12 | sed 's/^/  /'
+  t_in=$(grep -m1 'PM: suspend entry' <<< "$lines" | awk '{print $1}')
+  t_out=$(grep 'PM: suspend exit' <<< "$lines" | tail -n1 | awk '{print $1}')
+  echo "  절전 들어감 / suspend entry seen: $([[ -n $t_in ]] && echo 예/yes || echo 아니요/no)"
+  echo "  절전에서 깨어남 / suspend exit seen: $([[ -n $t_out ]] && echo 예/yes || echo 아니요/no)"
+  if [[ -n $t_in && -n $t_out ]]; then
+    echo "  잔 시간 / slept: 약 $(awk -v a="$t_in" -v b="$t_out" 'BEGIN { printf "%.0f", b - a }')초 (로그 시각 기준 / from log times)"
+  else
+    check "덮개를 닫아도 절전에 들어갔다 나온 기록이 없음 / no suspend entry+exit in the log"
+  fi
+  after=$(rd /sys/power/suspend_stats/success)
+  [[ -n $after ]] && echo "  suspend_stats/success: ${SLEEP_STATS_BEFORE:-?} -> $after"
+  # How long the hardware really was in its low-power state (newer kernels)
+  [[ -r /sys/power/suspend_stats/last_hw_sleep ]] \
+    && echo "  suspend_stats/last_hw_sleep: $(rd /sys/power/suspend_stats/last_hw_sleep) us (0 = 깊은 절전에 못 들어감 / no deep idle)"
+  return 0
+}
+
+s7_network() {
+  sec 7 "Wi-Fi / 블루투스 / Bluetooth"
+  local o i drv wifi=0
+  # rfkill: the device column only (no names that could identify the machine)
+  show 10 rfkill list
+  [[ $(LC_ALL=C timeout 10 rfkill list 2>/dev/null) == *"Hard blocked: yes"* ]] \
+    && check "무선이 하드웨어 스위치로 꺼져 있음 / radio hard blocked"
+  show 15 nmcli -t -f DEVICE,TYPE,STATE device
+  echo "무선 드라이버 / wireless drivers:"
+  for i in /sys/class/net/*; do
+    [[ -d $i/wireless || -e $i/phy80211 ]] || continue
+    wifi=$(( wifi + 1 ))
+    drv=$(readlink "$i/device/driver" 2>/dev/null)
+    drv=${drv##*/}
+    echo "  $(basename "$i"): ${drv:-(알 수 없음 / unknown)}"
+  done
+  if (( wifi == 0 )); then
+    echo "  (무선 랜 장치 없음 / no wireless interface)"
+    check "Wi-Fi 장치가 보이지 않음 / no Wi-Fi interface"
+  fi
+  # Connected or not and the signal strength. The network NAME is never asked for.
+  echo "Wi-Fi 연결 / connection:"
+  if have nmcli; then
+    o=$(LC_ALL=C timeout 15 nmcli -t -f ACTIVE,SIGNAL device wifi list --rescan no 2>/dev/null | grep -m1 '^yes:')
+    if [[ -n $o ]]; then
+      echo "  연결됨 / connected: 예 / yes, 신호 / signal ${o#yes:}%"
+    else
+      echo "  연결됨 / connected: 아니요 / no"
+    fi
+  else
+    echo "  (nmcli 없음)"
+  fi
+  echo "블루투스 / Bluetooth:"
+  if have bluetoothctl; then
+    o=$(LC_ALL=C timeout 10 bluetoothctl show 2>&1 | grep -E '^\s*(Powered|Discoverable|Pairable):|No default controller')
+    if [[ -n $o ]]; then printf '%s\n' "$o" | sed -E 's/^\s*/  /'; else echo "  (응답 없음 / no answer from bluetoothd)"; fi
+    grep -q 'Powered:' <<< "$o" || check "블루투스 어댑터가 보이지 않음 / no Bluetooth controller"
+  else
+    echo "  (bluetoothctl 없음)"
+  fi
+  svc bluetooth.service || true
+  svc NetworkManager.service || true
+  echo "커널 로그 (펌웨어) / kernel log (last 15, from $KLOG_HOW):"
+  klog_grep 'iwlwifi|bluetooth' 15
+  have nmcli || have rfkill || skip "nmcli, rfkill 없음"
+}
+
+s8_battery() {
+  sec 8 "배터리 / Battery"
+  local d f v n=0 full design wear
+  for d in /sys/class/power_supply/*; do
+    [[ -d $d ]] || continue
+    echo "$(basename "$d") ($(val "$d/type")):"
+    [[ $(rd "$d/type") == Battery ]] && n=$(( n + 1 ))
+    # never serial_number
+    for f in status capacity energy_full energy_full_design charge_full charge_full_design cycle_count online; do
+      v=$(rd "$d/$f")
+      [[ -n $v ]] && echo "  $f: $v"
+    done
+    full=$(rd "$d/energy_full"); design=$(rd "$d/energy_full_design")
+    if [[ -z $full || -z $design ]]; then full=$(rd "$d/charge_full"); design=$(rd "$d/charge_full_design"); fi
+    if [[ $full =~ ^[0-9]+$ && $design =~ ^[0-9]+$ ]] && (( design > 0 )); then
+      wear=$(( 100 - full * 100 / design ))
+      echo "  수명 / health: 설계 용량의 $(( full * 100 / design ))% (마모 / wear ${wear}%)"
+    fi
+  done
+  (( n > 0 )) || check "배터리가 보이지 않음 / no battery found"
+}
+
+s9_memory() {
+  sec 9 "메모리 / Memory"
+  show 10 free -m || skip "free 없음"
+  show 10 zramctl
+  show 10 swapon --show
+  echo "/proc/pressure/memory:"
+  if [[ -r /proc/pressure/memory ]]; then sed 's/^/  /' /proc/pressure/memory; else echo "  (없음)"; fi
+  echo "서비스 / services:"
+  svc sufun-memguard.service || check "sufun-memguard.service 가 켜져 있지 않음 / not active"
+  svc earlyoom.service || check "earlyoom.service 가 켜져 있지 않음 / not active"
+  grep -q zram /proc/swaps 2>/dev/null || check "zram 스왑이 없음 / no zram swap"
+}
+
+s10_sensors() {
+  sec 10 "시스템 모니터 센서 / System Monitor sensors"
+  local all n k z any=0
+  if (( ! HAVE_SESSION )); then
+    echo "  ($NO_SESSION)"
+    skip "데스크톱 세션이 없음 / no desktop session"
+  else
+    all=$(LC_ALL=C timeout 60 busctl --user --timeout=50 call org.kde.ksystemstats1 /org/kde/ksystemstats1 org.kde.ksystemstats1 allSensors 2>/dev/null)
+    if [[ -z $all ]]; then
+      echo "  (ksystemstats가 응답하지 않음 / no answer from org.kde.ksystemstats1)"
+      check "ksystemstats 응답 없음 / no answer"
+    else
+      n=$(awk '{print $2; exit}' <<< "$all")
+      echo "  센서 수 / sensors: $n"
+      # "name in the report" = "pattern in the answer"
+      for k in 'cpu/all/usage="cpu/all/usage"' 'memory/physical/used="memory/physical/used"'                'network/.../download="network/[^"]*/download"' 'gpu/...="gpu/[^"]*"'; do
+        if grep -qE "${k#*=}" <<< "$all"; then
+          echo "  ${k%%=*}: 있음 / yes"
+        else
+          echo "  ${k%%=*}: 없음 / no"
+          check "센서 없음 / sensor missing: ${k%%=*}"
+        fi
+      done
+    fi
+  fi
+  echo "온도 / thermal zones:"
+  for z in /sys/class/thermal/thermal_zone*; do
+    [[ -r $z/type ]] || continue
+    any=1
+    k=$(rd "$z/temp")
+    if [[ $k =~ ^-?[0-9]+$ ]]; then k="$(( k / 1000 )) °C"; else k="(읽을 수 없음)"; fi
+    echo "  $(basename "$z") $(rd "$z/type"): $k"
+  done
+  (( any )) || echo "  (없음 / none)"
+}
+
+s11_boot() {
+  sec 11 "펌웨어 부팅 항목 / Firmware boot entries"
+  local o order first
+  if ! have efibootmgr; then
+    echo "  (efibootmgr: 없음 / not installed)"
+    skip "efibootmgr 없음"
+  else
+    o=$(LC_ALL=C timeout 15 efibootmgr 2>&1)
+    if (( $? != 0 )); then
+      echo "\$ efibootmgr"
+      printf '%s\n' "$o" | sed 's/^/  /'
+      check "efibootmgr 실패 (UEFI로 부팅하지 않았거나 권한 없음) / efibootmgr failed"
+    else
+      echo "\$ efibootmgr"
+      printf '%s\n' "$o" | sed 's/^/  /'
+      order=$(sed -n 's/^BootOrder: //p' <<< "$o")
+      first=${order%%,*}
+      echo "BootOrder: ${order:-(없음)}"
+      if [[ -n $first ]]; then
+        echo "첫 번째 항목 / first entry: $(grep -m1 -E "^Boot$first" <<< "$o" | cut -c1-120)"
+      fi
+      if grep -qi 'BOOTX64\.EFI' <<< "$o"; then
+        echo "BOOTX64.EFI 를 가리키는 항목 / entry pointing to BOOTX64.EFI: 있음 / yes"
+      else
+        echo "BOOTX64.EFI 를 가리키는 항목 / entry pointing to BOOTX64.EFI: 없음 / no"
+      fi
+    fi
+  fi
+  # The fallback loader file on the EFI partition (/boot is usually root-only)
+  local file=/boot/EFI/BOOT/BOOTX64.EFI
+  if [[ -r /boot/EFI ]]; then
+    echo "$file: $([[ -e $file ]] && echo 있음 / present || echo 없음 / missing)"
+  elif (( HAVE_SUDO )); then
+    echo "$file: $(sudo -n test -e $file && echo 있음 / present || echo 없음 / missing) (sudo)"
+  else
+    echo "$file: (건너뜀: 관리자 권한 필요 / skipped: needs root)"
+  fi
+  if (( HAVE_SUDO )) && have bootctl; then
+    echo "\$ sudo bootctl list"
+    LC_ALL=C timeout 15 sudo -n bootctl list --no-pager 2>&1 | grep -E '^ *(type|title|id|source|linux|options):' | sed 's/^ */  /'
+  else
+    echo "bootctl list: (건너뜀: 관리자 권한 필요 / skipped: needs root)"
+  fi
+  return 0
+}
+
+s12_sufun() {
+  sec 12 "SUFUN 상태 / SUFUN state"
+  local key=/usr/share/sufun/keys/sufun-release.gpg
+  echo "버전 / version: $(val /usr/share/sufun/VERSION)"
+  [[ -r /usr/share/sufun/VERSION ]] || check "/usr/share/sufun/VERSION 없음 / missing"
+  if [[ -s $key ]]; then
+    echo "업데이트 키: 있음 / update key: present"
+  else
+    echo "업데이트 키: 없음 / update key: missing"
+    check "업데이트 키 없음 / update key missing"
+  fi
+  if [[ -e /etc/sufun/boot-stage.conf ]]; then
+    echo "microSD 설치 / microSD install: 예 / yes (/etc/sufun/boot-stage.conf 있음)"
+  else
+    echo "microSD 설치 / microSD install: 아니요 / no"
+  fi
+}
+
+# =========================================================================
+# Privacy filter: the last step before the report is saved
+# =========================================================================
+re_escape() { printf '%s' "$1" | sed 's#[][\.*^$+?(){}|/]#\\&#g'; }
+privacy_filter() {  # privacy_filter <in> <out>
+  local s=$TMP/filter.sed host user home a e
+  local edge
+  host=$(hostname 2>/dev/null || uname -n 2>/dev/null || rd /etc/hostname)
+  user=$(id -un 2>/dev/null || echo "${USER:-}")
+  home=${HOME:-}
+  {
+    # MAC addresses
+    echo 's/([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}/[MAC]/g'
+    # anything after the word "serial..." on a line
+    echo 's/(serial[A-Za-z_]*).*/\1 [removed]/I'
+    # UUIDs (disks, partitions): after "UUID=" and anything shaped like one
+    echo 's/(UUID=)[^ ,;"]+/\1…/Ig'
+    echo 's/[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}/…/g'
+    # the addresses of this computer's network interfaces, exactly
+    if have ip; then
+      for a in $(LC_ALL=C timeout 10 ip -o addr show 2>/dev/null | awk '{print $4}' | sed 's#/.*##' | grep -vE '^(127\.0\.0\.1|::1)$'); do
+        echo "s/$(re_escape "$a")/[IP]/g"
+      done
+    fi
+    # anything else shaped like an IPv4 / IPv6 address (not version numbers like 6.5.2.1-1)
+    echo 's/(^|[^A-Za-z0-9.-])([0-9]{1,3}\.){3}[0-9]{1,3}($|[^A-Za-z0-9.-])/\1[IP]\3/g'
+    echo 's/(^|[^A-Za-z0-9:.])([0-9A-Fa-f]{1,4}:){4,7}[0-9A-Fa-f]{1,4}/\1[IP6]/g'
+    echo 's/(^|[^A-Za-z0-9:.])([0-9A-Fa-f]{1,4}:){1,6}:([0-9A-Fa-f]{1,4}(:[0-9A-Fa-f]{1,4})*)?/\1[IP6]/g'
+    # home path, then host and user name (as words; each rule twice for neighbours).
+    # A name "sufun" must not eat "sufun-base" or "/usr/share/sufun/": stricter word edges.
+    if [[ ${#home} -ge 3 ]]; then echo "s/$(re_escape "$home")/~/g"; fi
+    if [[ ${#host} -ge 2 ]]; then
+      e=$(re_escape "$host")
+      edge='[^A-Za-z0-9]'; [[ ${host,,} == sufun ]] && edge='[^A-Za-z0-9_./-]'
+      echo "s/(^|$edge)$e(\$|$edge)/\\1[host]\\2/g"
+      echo "s/(^|$edge)$e(\$|$edge)/\\1[host]\\2/g"
+    fi
+    if [[ ${#user} -ge 2 && $user != root ]]; then
+      e=$(re_escape "$user")
+      edge='[^A-Za-z0-9]'; [[ ${user,,} == sufun ]] && edge='[^A-Za-z0-9_./-]'
+      echo "s/(^|$edge)$e(\$|$edge)/\\1[user]\\2/g"
+      echo "s/(^|$edge)$e(\$|$edge)/\\1[user]\\2/g"
+    fi
+  } > "$s"
+  sed -E -f "$s" "$1" > "$2"
+}
+
+# =========================================================================
+# Main
+# =========================================================================
+BUSY=
+close_busy() {
+  [[ -n $BUSY ]] || return 0
+  # shellcheck disable=SC2086   # $BUSY is "service path": two words on purpose
+  qdbus6 $BUSY close >/dev/null 2>&1 \
+    || busctl --user call ${BUSY% *} ${BUSY#* } org.kde.kdialog.ProgressDialog close >/dev/null 2>&1 || true
+  BUSY=
+}
+
+if [[ $MODE == gui ]]; then
+  kdialog --title "$T" --yes-label "시작" --no-label "취소" --yesno \
+"이 Surface의 하드웨어가 SUFUN에서 잘 동작하는지 점검하고 보고서를 만듭니다.
+시스템은 아무것도 바뀌지 않습니다. 2-3분 걸립니다.
+
+1. 입력 테스트 창: 터치패드, 화면 터치, 펜, 키보드를 한 번씩 써 보세요.
+2. 절전 테스트: 덮개를 닫았다가 다시 엽니다 (건너뛸 수 있음).
+3. 나머지는 자동으로 모읍니다: 카메라 사진 한 장씩, Wi-Fi, 블루투스, 배터리, 메모리 등.
+
+보고서는 홈 폴더에 저장됩니다 (sufun-hwcheck-날짜.zip). 인터넷으로 보내지 않습니다.
+Wi-Fi 이름, 암호, 일련번호, 컴퓨터 이름, 사용자 이름은 보고서에 넣지 않습니다.
+
+Checks this Surface's hardware and writes a report into your home folder. Nothing is changed or sent.
+
+시작할까요?" || exit 0
+  guided_input_test
+  guided_sleep_test
+  BUSY=$(kdialog --title "$T" --progressbar "하드웨어 정보를 모으는 중입니다... (카메라 때문에 1-2분 걸릴 수 있습니다)" 0 2>/dev/null) || BUSY=
+else
+  echo "==> SUFUN 하드웨어 점검: 정보를 모으는 중 / collecting (--auto)"
+fi
+
+get_klog
+for s in s1_system s2_x86 s3_input s4_accel s5_cameras s6_sleep s7_network s8_battery \
+         s9_memory s10_sensors s11_boot s12_sufun; do
+  [[ $MODE == auto ]] && echo "    $s"
+  "$s" >> "$BODY" 2>&1
+done
+
+# --- report.txt: header, summary table, sections; then the privacy filter ---
+n_ok=0 n_check=0 n_skip=0
+{
+  echo "SUFUN 하드웨어 점검 보고서 / SUFUN hardware check report"
+  echo "날짜 / date: $(date '+%Y-%m-%d %H:%M')    방식 / mode: $MODE    관리자 권한 / root used: $( (( HAVE_SUDO )) && echo 예/yes || echo 아니요/no)"
+  echo "(개인 정보는 지웠습니다: MAC 주소, 일련번호, 컴퓨터/사용자 이름, IP 주소, Wi-Fi 이름)"
+  echo
+  echo "== 요약 / Summary =="
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    printf '%3s. %-10s %s%s\n' "$i" "[${ST[$i]:-?}]" "${TITLE[$i]:-?}" "${NOTE[$i]:+  -- ${NOTE[$i]}}"
+    case ${ST[$i]:-} in
+      OK) n_ok=$(( n_ok + 1 )) ;; "확인 필요") n_check=$(( n_check + 1 )) ;; *) n_skip=$(( n_skip + 1 )) ;;
+    esac
+  done
+  echo "    OK $n_ok / 확인 필요 $n_check / 건너뜀 $n_skip"
+  cat "$BODY"
+  echo
+  echo "== 끝 / End =="
+} > "$TMP/report-raw.txt"
+if ! privacy_filter "$TMP/report-raw.txt" "$OUT/report.txt" || [[ ! -s $OUT/report.txt ]]; then
+  # Never publish an unfiltered report.
+  rm -f "$OUT/report.txt"
+  close_busy
+  echo "오류: 보고서를 저장하지 못했습니다 (개인 정보 필터 실패)." >&2
+  [[ $MODE == gui ]] && kdialog --title "$T" --error "보고서를 저장하지 못했습니다."
+  exit 1
+fi
+
+# --- one file for uploading ---
+ZIP="$OUT.zip"
+ZIP_NOTE=
+if have bsdtar; then
+  rm -f "$ZIP"
+  if ! bsdtar --format zip -cf "$ZIP" -C "$(dirname "$OUT")" "$(basename "$OUT")" 2>"$TMP/zip.err"; then
+    ZIP_NOTE="none (bsdtar failed: $(head -n1 "$TMP/zip.err"))"
+    rm -f "$ZIP"
+  fi
+else
+  ZIP_NOTE="none (bsdtar missing)"
+fi
+close_busy
+
+echo "SUFUN-HWCHECK-REPORT: $OUT/report.txt"
+echo "SUFUN-HWCHECK-ZIP: ${ZIP_NOTE:-$ZIP}"
+echo "SUFUN-HWCHECK-SUMMARY: ok=$n_ok check=$n_check skip=$n_skip"
+
+if [[ $MODE == gui ]]; then
+  if [[ -z $ZIP_NOTE ]]; then where="올릴 파일 / file to upload:
+  $ZIP"; else where="zip 파일은 만들지 못했습니다. 이 폴더를 올리세요:
+  $OUT"; fi
+  have xdg-open && xdg-open "$OUT" >/dev/null 2>&1 &
+  kdialog --title "$T" --msgbox "점검이 끝났습니다.
+
+OK $n_ok / 확인 필요 $n_check / 건너뜀 $n_skip
+
+$where
+
+보고서 / report: $OUT/report.txt
+'확인 필요'는 고장이라는 뜻이 아닙니다. 도움을 요청할 때 이 파일을 함께 올려 주세요."
+fi
+exit 0

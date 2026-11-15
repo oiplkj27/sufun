@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Builds and signs "sufun-update-<VERSION>.sufun" from the built packages.
+# Builds and signs "sufun-update-<version>.sufun" from the built packages.
+# <version> = scripts/version.sh: 1.0 (release), 1.0rcN (pre-release), 1.0dev (test).
 # Used by the release workflow; can also run locally for testing.
 #
 #   bash scripts/make-sufun-update.sh <packages-dir> <output-dir>
@@ -8,15 +9,17 @@
 # (the workflow does that from the GitHub secret). Optional environment:
 #   SUFUN_SIGNING_PASSPHRASE   passphrase of the key (empty = none)
 #   GNUPGHOME                  gpg folder that holds the key
-# Release notes: release-notes/<VERSION>.txt (Korean) and, optionally,
-# release-notes/<VERSION>.min-from = the oldest version this update can be installed on.
+# Release notes: release-notes/<version>.txt (Korean) and, optionally,
+# release-notes/<version>.min-from = the oldest version this update can be installed on.
+# Pre-releases and test builds without their own notes use release-notes/prerelease.txt.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PKGS="${1:?usage: make-sufun-update.sh <packages-dir> <output-dir>}"
 OUT="${2:?usage: make-sufun-update.sh <packages-dir> <output-dir>}"
-VERSION="$(tr -d '[:space:]' < "$HERE/VERSION")"
+VERSION="$(bash "$HERE/scripts/version.sh")"
 NOTES="$HERE/release-notes/$VERSION.txt"
+[[ -f $NOTES || ${SUFUN_VERSION_KIND:-dev} == release ]] || NOTES="$HERE/release-notes/prerelease.txt"
 MINF="$HERE/release-notes/$VERSION.min-from"
 mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"; PKGS="$(cd "$PKGS" && pwd)"
 [[ -f $NOTES ]] || { echo "missing $NOTES (Korean release notes)" >&2; exit 1; }

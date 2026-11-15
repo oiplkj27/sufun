@@ -4,9 +4,13 @@
 #
 #   Test 1: live USB boots to the Plasma desktop, checks the Windows 11-style layout,
 #           prints RAM numbers
-#   Test 2: the installer installs SUFUN in "내부 저장장치에 설치" mode to an empty
-#           64 GB virtual disk (test mode). An empty microSD card is attached too:
+#   Test 2: the installer installs SUFUN in "내부 저장장치에 설치" mode to a 64 GB
+#           virtual disk that holds a pretend Windows with known files
+#           (make-windows-test-disk.sh). An empty microSD card is attached too:
 #           the installer must pick the internal disk by itself, never the card.
+#           "Windows 파일 가져오기": the files are copied to the card first, then
+#           into the new home folder; the card is empty again afterwards.
+#           The firmware entry "SUFUN" is created and put first.
 #   Test 3: the installed system boots, shows the login screen, checks itself, then
 #           logs in (test disk only) and checks the Korean desktop
 #           (SUFUN boot entry + Plymouth, version, zram, earlyoom, firewall, fstab).
@@ -17,6 +21,10 @@
 #           WININSTALL partition (the dummy ISO's boot file + a test kernel option)
 #   Test 5: the installed system again: sufun-windows-restore --remove puts back
 #           the partition sizes and removes the entry
+#   Test 5b: the LIVE system on this computer, which now has SUFUN installed: it
+#           must ask for the installed system's password (no auto-login, no free sudo)
+#   Test 5c: the installed system with the firmware's boot entries wiped: it must
+#           still start, through the fallback file \EFI\BOOT\BOOTX64.EFI
 # Security audit tests (docs/security-audit.md), in tests 1 and 3:
 #   - the host scans the VM's ports over a private scan network (portscan.sh)
 #   - test 3 gets a small "USB stick" with a .sufun update made by the real release
@@ -51,7 +59,15 @@ xorriso -osirrox on -indev "$ISO" \
 LABEL=$(blkid -s LABEL -o value "$ISO" 2>/dev/null || xorriso -indev "$ISO" -pvd_info 2>/dev/null | sed -n 's/^Volume Id *: *//p')
 LIVEOPTS="archisobasedir=arch archisolabel=$LABEL cow_spacesize=512M console=ttyS0,115200 console=tty0"
 
-qemu-img create -f qcow2 disk.qcow2 64G >/dev/null
+# The internal disk: a pretend Windows install (needs sudo for loop devices; on a
+# developer machine without it: an empty disk, and the import test is left out)
+WINDISK=0
+if sudo -n true 2>/dev/null && command -v mkntfs >/dev/null && bash "$HERE/make-windows-test-disk.sh" "$OUT/disk.qcow2"; then
+  WINDISK=1
+else
+  [[ ${GITHUB_ACTIONS:-} == true ]] && { echo "the Windows test disk could not be made" >&2; exit 1; }
+  qemu-img create -f qcow2 disk.qcow2 64G >/dev/null
+fi
 # Empty 1 GiB microSD card (QEMU SD cards must be a power of 2 in size)
 truncate -s 1G sdblank.img
 SDCARD=(-device sdhci-pci,sd-spec-version=3 -drive id=sdimg,if=none,format=raw,file=sdblank.img -device sd-card,drive=sdimg)
@@ -91,6 +107,14 @@ run_vm 2-install 3600 'SUFUN-TEST: INSTALL-DONE' 'SUFUN-TEST: INSTALL-FAILED' \
 if ! grep -qE 'SUFUN-TEST: TARGET /dev/vda[[:space:]]*$' 2-install-serial.log; then
   echo "the installer did not pick the internal disk /dev/vda"; fail=1
 fi
+grep -q 'SUFUN-TEST: INFO firmware-entry SUFUN first' 2-install-serial.log || { echo "the installer did not put the firmware entry SUFUN first"; fail=1; }
+if (( WINDISK )); then
+  grep -q 'SUFUN-TEST: INFO import-finish done' 2-install-serial.log || { echo "Windows 파일 가져오기 did not finish"; fail=1; }
+  # the copy waited on the (empty) microSD card and was removed again: the card is empty as before
+  if [[ -n $(blkid -p -o value -s PTTYPE -s TYPE sdblank.img 2>/dev/null) ]]; then
+    echo "the microSD card is not empty after the installation:"; sfdisk -l sdblank.img; fail=1
+  fi
+fi
 
 if (( ! fail )); then
   # Boot from the virtual disk only, like a real start: firmware -> systemd-boot -> SUFUN.
@@ -119,6 +143,21 @@ if (( ! fail )); then
   run_vm 5-restore-cleanup 900 'SUFUN-TEST: RESTORE-CLEANUP-DONE' 'SUFUN-TEST: BOOTED installed' \
     -drive file=disk.qcow2,if=virtio,format=qcow2 || fail=1
   check_serial 5-restore-cleanup || fail=1
+fi
+
+if (( ! fail )); then
+  # The live system on a computer that has SUFUN installed: password of the
+  # installed system needed (sufun-live-guard).
+  run_vm 5b-liveguard 1500 'SUFUN-TEST: LIVEGUARD-DONE' 'SUFUN-TEST: NEVER' \
+    -cdrom "$ISO" -drive file=disk.qcow2,if=virtio,format=qcow2 \
+    -kernel vmlinuz -initrd initrd.img -append "$LIVEOPTS sufun.test=liveguard" || fail=1
+  check_serial 5b-liveguard || fail=1
+  # The firmware forgot all boot entries (fresh variables): the fallback boot
+  # file on the disk must start SUFUN.
+  cp "$VARS_SRC" vars.fd
+  run_vm 5c-fallback 900 'SUFUN-TEST: FALLBACK-BOOT-OK' 'SUFUN-TEST: BOOTED installed' \
+    -drive file=disk.qcow2,if=virtio,format=qcow2 || fail=1
+  check_serial 5c-fallback || fail=1
 fi
 
 rm -f disk.qcow2 sdblank.img winiso.iso sec.iso vmlinuz initrd.img ucode.img ./*.sock
