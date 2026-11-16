@@ -1095,6 +1095,8 @@ case "$MODE" in
       security_installed tester
       host_portscan
       hwcheck_test tester
+      # the SUFUN update key this installed system trusts (the CI script compares it with keys/sufun.asc)
+      say "INFO update-key-fpr $(gpg --homedir "$(mktemp -d)" --batch --with-colons --show-keys /usr/share/sufun/keys/sufun-release.gpg 2>/dev/null | awk -F: '$1=="fpr"{print $10; exit}')"
       if [[ -f /etc/sufun/boot-stage.conf ]]; then rescue_test; else import_checks; fi
     else
       say "FAIL desktop-login"

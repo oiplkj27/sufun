@@ -124,6 +124,16 @@ if (( ! fail )); then
     -drive file=disk.qcow2,if=virtio,format=qcow2 \
     -drive file=winiso.iso,media=cdrom,readonly=on "${SCANNIC[@]}" "${SECUSB[@]}" || fail=1
   check_serial 3-installed "$WANT" || fail=1
+  # The public key in the repository (keys/sufun.asc) must be the key the ISO and the
+  # installed system trust for updates. Without the file (forks, old test builds): no key.
+  PUBKEY="$HERE/../../keys/sufun.asc"
+  if [[ -s $PUBKEY ]]; then
+    want_fpr=$(gpg --homedir "$(mktemp -d)" --batch --with-colons --show-keys "$PUBKEY" 2>/dev/null | awk -F: '$1=="fpr"{print $10; exit}')
+    got_fpr=$(grep -ao 'SUFUN-TEST: INFO update-key-fpr [0-9A-F]*' 3-installed-serial.log | head -n1 | awk '{print $4}')
+    echo "update key: repository $want_fpr, installed system ${got_fpr:-none}"
+    grep -q 'SUFUN-TEST: INFO update-key 1' 2-install-serial.log || { echo "the installer did not find the SUFUN update key in the ISO"; fail=1; }
+    [[ -n $want_fpr && $want_fpr == "$got_fpr" ]] || { echo "the installed system does not trust the key in keys/sufun.asc"; fail=1; }
+  fi
   if (( ${#SCANNIC[@]} )); then
     grep -q 'REACHED=1 OPEN_TCP=0 OPEN_UDP=0 ' 3-installed-portscan.txt 2>/dev/null || { echo "installed system: port scan found open ports or did not run"; fail=1; }
   fi
