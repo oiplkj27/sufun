@@ -79,6 +79,11 @@ if [[ -f /etc/sufun/welcome.conf ]]; then
 fi
 UI_KO=1
 [[ ${W_LANG:-${LANG:-ko}} == ko* ]] || UI_KO=0
+# Test mode: the language the test asks for (SUFUN_LANG: 1 English, 2 Korean), not
+# whatever the first-start chooser happened to have written by then
+if [[ ${SUFUN_AUTO:-} == 1 && -n ${SUFUN_LANG:-} ]]; then
+  if [[ $SUFUN_LANG == 2 ]]; then UI_KO=1; else UI_KO=0; fi
+fi
 T() { if (( UI_KO )); then printf '%s' "$1"; else printf '%s' "$2"; fi; }
 
 js() {  # js <text>: as a JSON string
