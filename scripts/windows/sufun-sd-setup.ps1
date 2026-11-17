@@ -38,12 +38,19 @@
   그다음 Surface UEFI → Boot configuration → "Windows Setup" 을 왼쪽으로 밀어, 진짜 Windows 설치 화면이
   USB 없이 내부 저장장치에서 뜨는지 확인합니다 (첫 화면에서 취소). 끝나면 -Uninstall 로 되돌립니다.
   자세한 설명: docs/windows-restore-ko.md
+.EXAMPLE
+  powershell -ExecutionPolicy Bypass -File .\sufun-sd-setup.ps1 -RestoreRehearsal "C:\Users\me\Downloads\Win11_24H2_Korean_x64.iso" -Light
+  가벼운 리허설: C: 를 ISO 크기만큼(약 9 GB) 줄일 수 없을 때. 부팅에 필요한 파일만 복사합니다
+  (EFI 부팅 파일, boot\, sources\boot.wim 등. 큰 install.wim 은 뺌). C: 는 약 1.5 GB만 줄입니다.
+  "이 Surface의 펌웨어가 내부 저장장치의 작은 FAT32 파티션에서 진짜 Windows 설치 프로그램을 켠다"는 것을 확인합니다.
+  -Light 를 붙이지 않아도, 전체 리허설이 안 들어가면 스크립트가 설명하고 가벼운 리허설을 권합니다.
 #>
 [CmdletBinding()]
 param(
     [string]$IsoPath,
     [switch]$Uninstall,
     [string]$RestoreRehearsal,     # path of a Windows 11 ISO: see the last example above
+    [switch]$Light,                # with -RestoreRehearsal: boot files only (no install.wim), C: shrinks by about 1.5 GB
     [switch]$All,                  # with -Uninstall: remove the rehearsal AND the SUFUN boot setup in one go
     # ---- CI test mode (GitHub Actions only, virtual disks only; refused everywhere else) ----
     [int]$CiCardDisk = -1,
@@ -523,10 +530,14 @@ function Remove-Rehearsal {
     if ($rst.Count -eq 0 -and $parts.Count -eq 0) { return $false }
     Step 'Windows 복원 리허설 되돌리기'
     $result = 'unknown'
-    if ($script:Ci) { $result = 'ok' }
+    # A light rehearsal (boot files only) is noted as "light-ok": the boot path is
+    # proven, the full set of install files was not on this Surface.
+    $good = 'ok'
+    if ($rst.ContainsKey('Kind') -and $rst['Kind'] -eq 'light') { $good = 'light-ok' }
+    if ($script:Ci) { $result = $good }
     else {
-        $a = (Read-Host "    리허설에서 'Windows Setup' 을 골랐을 때 Windows 설치 화면이 나왔습니까? [y = 예 / n = 아니요 / Enter = 아직 해 보지 않음]").Trim()
-        if ($a -match '^(y|yes|예|네|ㅇ)$') { $result = 'ok' } elseif ($a -match '^(n|no|아니요|아니오|ㄴ)$') { $result = 'failed' }
+        $a = (Read-Host "    리허설에서 'Windows Setup' 을 골랐을 때 Windows 설치 화면(언어 고르기)이 나왔습니까? [y = 예 / n = 아니요 / Enter = 아직 해 보지 않음]").Trim()
+        if ($a -match '^(y|yes|예|네|ㅇ)$') { $result = $good } elseif ($a -match '^(n|no|아니요|아니오|ㄴ)$') { $result = 'failed' }
     }
     Write-RehearsalMarker $result
 
@@ -605,6 +616,7 @@ Write-Host ''
 Write-Host '=== SUFUN microSD 부팅 준비 (Surface Go 3, USB 없이) ===' -ForegroundColor White
 if ($Uninstall) { Write-Host '    모드: 되돌리기 (-Uninstall)' }
 if ($RestoreRehearsal -and $Uninstall) { Fail '-RestoreRehearsal 과 -Uninstall 은 함께 쓸 수 없습니다.' }
+if ($Light -and -not $RestoreRehearsal) { Fail '-Light 는 -RestoreRehearsal <Windows 11 ISO> 와 함께 씁니다.' }
 
 # ============================================================== -RestoreRehearsal <Windows 11 ISO>
 if ($RestoreRehearsal) {
@@ -634,28 +646,83 @@ if ($RestoreRehearsal) {
     $split = $false; $splitMB = 3800
     if ($Ci -and $CiSplitMB -gt 0) { $split = $true; $splitMB = $CiSplitMB }
     if ($wimSize -ge 4294967295) { $split = $true }
-    if ($split -and $wim -notlike '*.wim') { Fail 'install.esd 가 4 GB보다 커서 FAT32에 넣을 수 없습니다.' }
-    $tooBig = $winFiles | Where-Object { $_.Length -ge 4294967295 -and $_.FullName -ne $wim } | Select-Object -First 1
+    $fullProblem = ''
+    if ($split -and $wim -notlike '*.wim') { $fullProblem = 'install.esd 가 4 GB보다 커서 FAT32에 넣을 수 없습니다.' }
+    # Light rehearsal: everything on the ISO except the big install image
+    # (sources\install.wim / install.esd / install*.swm). That is what the firmware,
+    # the Windows boot manager and Setup's own small system (boot.wim) read to get
+    # to Setup's first screen.
+    $srcDir = (Join-Path $WinRoot 'sources').TrimEnd('\')
+    $lightFiles = @($winFiles | Where-Object { -not ($_.DirectoryName.TrimEnd('\') -eq $srcDir -and $_.Name -match '^install\d*\.(wim|esd|swm)$') })
+    $lightBytes = [int64]($lightFiles | Measure-Object -Property Length -Sum).Sum
+    $tooBig = $lightFiles | Where-Object { $_.Length -ge 4294967295 } | Select-Object -First 1
     if ($tooBig) { Fail "FAT32에 넣을 수 없는 큰 파일이 있습니다: $($tooBig.FullName)" }
-    # the same size rule as sufun-windows-restore: files + 512 MB, rounded up to whole GB
+    # full: the same size rule as sufun-windows-restore: files + 512 MB, rounded up to whole GB
     $needGiB = [int64][Math]::Floor(($winBytes + 512MB + 1GB - 1) / 1GB)
     $needBytes = $needGiB * 1GB
-    Ok "ISO: $winIso  ($(Fmt-GB $winBytes))"
+    # light: files + 256 MB, rounded up to 128 MB (about 1.5 GB with a real Windows 11 ISO)
+    $lightNeed = [int64][Math]::Ceiling(($lightBytes + 256MB) / 128MB) * 128MB
+    if ($lightNeed -lt 384MB) { $lightNeed = [int64]384MB }
+    Ok "ISO: $winIso  ($(Fmt-GB $winBytes), 그중 부팅에 필요한 파일 $(Fmt-GB $lightBytes))"
 
-    Step "Windows 파티션(C:)을 $needGiB GB 줄이고 FAT32 파티션 '$RehLabel' 만들기"
+    # Before anything changes: how far can Windows shrink C: at all?
+    Step 'C: 를 얼마나 줄일 수 있는지 확인'
     $sup = Get-PartitionSupportedSize -DiskNumber $wp.DiskNumber -PartitionNumber $wp.PartitionNumber
-    $newSize = [int64]([Math]::Floor(($wp.Size - $needBytes - 1MB) / 1MB)) * 1MB
-    if ($newSize -lt [int64]$sup.SizeMin) {
-        Fail "C: 를 $needGiB GB 줄일 수 없습니다 (최소 크기 $(Fmt-GB $sup.SizeMin)). C: 에 빈 공간이 $($needGiB + 2) GB 이상 있어야 합니다. 파일을 지우거나 '디스크 정리'를 한 뒤 다시 하세요."
+    $fullNew  = [int64]([Math]::Floor(($wp.Size - $needBytes - 1MB) / 1MB)) * 1MB
+    $lightNew = [int64]([Math]::Floor(($wp.Size - $lightNeed - 1MB) / 1MB)) * 1MB
+    $canShrink = [int64]$wp.Size - [int64]$sup.SizeMin
+    if ($canShrink -lt 0) { $canShrink = [int64]0 }
+    Say "    C: 크기 $(Fmt-GB $wp.Size), 줄일 수 있는 가장 작은 크기 $(Fmt-GB $sup.SizeMin)  →  줄일 수 있는 양: $(Fmt-GB $canShrink)"
+    Say "    전체 리허설에 필요: $(Fmt-GB $needBytes)   /   가벼운 리허설에 필요: $(Fmt-GB $lightNeed)"
+    $useLight = [bool]$Light
+    if (-not $useLight) {
+        $why = ''
+        if ($fullProblem) { $why = $fullProblem }
+        elseif ($fullNew -lt [int64]$sup.SizeMin) { $why = "C: 를 $(Fmt-GB $needBytes) 줄여야 하는데, Windows가 줄여 주는 양은 $(Fmt-GB $canShrink) 뿐입니다." }
+        if ($why) {
+            Warn ''
+            Warn '    전체 리허설은 지금 할 수 없습니다:'
+            Warn "    $why"
+            Say  '    C: 에 빈 공간이 많아도 이럴 수 있습니다. Windows는 "옮길 수 없는 파일"보다 뒤쪽만 잘라 낼 수 있는데,'
+            Say  '    이 Surface에서는 NTFS 변경 저널($UsnJrnl)이 C: 의 뒤쪽에 있습니다. 저널을 지워도 Windows가'
+            Say  '    곧바로 다시 만들고 (더 뒤쪽에 만들기도 함), 최대 절전·페이지 파일·복원 지점을 꺼도 달라지지 않습니다.'
+            Say  '    그래서 이 파일을 쫓아다니는 것은 권하지 않습니다.'
+            Say  ''
+            Say  '    대신 "가벼운 리허설"을 할 수 있습니다:'
+            Say  "      - C: 를 $(Fmt-GB $lightNeed) 만 줄입니다 (부팅에 필요한 파일만 복사: EFI 부팅 파일, boot\, sources\boot.wim 등)."
+            Say  '      - 큰 설치 파일(install.wim)은 넣지 않습니다. 그래서 설치는 할 수 없고, 첫 화면까지만 확인합니다.'
+            Say  '      - 확인하는 것: 이 Surface의 펌웨어가 USB 없이 내부 저장장치의 작은 FAT32 파티션에서'
+            Say  '        진짜 Windows 설치 프로그램을 켜는지 (성공 = "언어 고르기" 화면이 나옴).'
+            Say  '      - 나머지(설치 파일 복사, install.wim 나누기)는 자동 테스트에서 확인했고, 실제 복원은 SUFUN에서'
+            Say  '        하므로 내부 저장장치 전체를 쓸 수 있어 공간 문제가 없습니다 (docs/windows-restore-ko.md).'
+            if ($lightNew -lt [int64]$sup.SizeMin) {
+                Fail "가벼운 리허설도 할 수 없습니다: C: 를 $(Fmt-GB $lightNeed) 줄여야 하는데 줄일 수 있는 양이 $(Fmt-GB $canShrink) 입니다. C: 에서 파일을 지워 빈 공간을 늘린 뒤 다시 하세요."
+            }
+            if (-not (Ask-YesNo '    가벼운 리허설로 진행할까요?' $true)) { Fail '취소했습니다. 아무것도 바뀌지 않았습니다.' }
+            $useLight = $true
+        }
     }
+    if ($useLight) {
+        if ($lightNew -lt [int64]$sup.SizeMin) {
+            Fail "가벼운 리허설도 할 수 없습니다: C: 를 $(Fmt-GB $lightNeed) 줄여야 하는데 줄일 수 있는 양이 $(Fmt-GB $canShrink) 입니다. C: 에서 파일을 지워 빈 공간을 늘린 뒤 다시 하세요."
+        }
+        $kind = 'light'; $partBytes = $lightNeed; $newSize = $lightNew; $split = $false
+        Ok '가벼운 리허설로 진행합니다 (부팅 파일만, install.wim 없음).'
+    } else {
+        $kind = 'full'; $partBytes = $needBytes; $newSize = $fullNew
+        Ok '전체 리허설로 진행합니다 (ISO 내용 전부).'
+    }
+
+    Step "Windows 파티션(C:)을 $(Fmt-GB $partBytes) 줄이고 FAT32 파티션 '$RehLabel' 만들기"
     Say '    나중에 -Uninstall 을 실행하면 이 파티션을 지우고 C: 를 지금 크기로 되돌립니다.'
     Ask-Word 'YES' "    Windows 파티션을 $(Fmt-GB $wp.Size) → $(Fmt-GB $newSize) 로 줄이려면 YES 를 입력하세요"
     # Written before anything changes, so -Uninstall can undo a half-finished run
     $rst['Version'] = '1'
+    $rst['Kind'] = $kind
     $rst['WindowsSizeBefore'] = [string][int64]$wp.Size
     Save-State $rst $null $RehStateFile
     Resize-Partition -DiskNumber $wp.DiskNumber -PartitionNumber $wp.PartitionNumber -Size $newSize
-    $rp = New-Partition -DiskNumber $wp.DiskNumber -Offset ($wp.Offset + $newSize) -Size $needBytes -GptType $BasicDataGuid
+    $rp = New-Partition -DiskNumber $wp.DiskNumber -Offset ($wp.Offset + $newSize) -Size $partBytes -GptType $BasicDataGuid
     Format-Volume -Partition $rp -FileSystem FAT32 -NewFileSystemLabel $RehLabel -Confirm:$false -Force | Out-Null
     $rp = Get-Partition -DiskNumber $rp.DiskNumber -PartitionNumber $rp.PartitionNumber
     $rst['PartitionGuid'] = "$($rp.Guid)"
@@ -664,9 +731,11 @@ if ($RestoreRehearsal) {
     $rl = Use-Letter $rp
     Set-Partition -DiskNumber $rp.DiskNumber -PartitionNumber $rp.PartitionNumber -NoDefaultDriveLetter $true
 
-    Step "Windows 설치 파일을 '$RehLabel' 에 복사 (10-20분)"
+    if ($useLight) { Step "Windows 설치 프로그램의 부팅 파일을 '$RehLabel' 에 복사 (install.wim 은 빼고, 1-3분)" }
+    else { Step "Windows 설치 파일을 '$RehLabel' 에 복사 (10-20분)" }
     $rcArgs = @($WinRoot, "${rl}:\", '/E', '/R:2', '/W:2', '/NFL', '/NDL', '/NP', '/NJH', '/A-:R')
-    if ($split) { $rcArgs += @('/XF', 'install.wim') }
+    if ($useLight) { $rcArgs += @('/XF', 'install.wim', 'install.esd', 'install*.swm') }
+    elseif ($split) { $rcArgs += @('/XF', 'install.wim') }
     $r = Run-Native 'robocopy.exe' $rcArgs
     Say $r.Out.Trim()
     if ($r.Code -ge 8) { Fail "복사하지 못했습니다 (robocopy 코드 $($r.Code))." }
@@ -679,7 +748,9 @@ if ($RestoreRehearsal) {
     foreach ($f in @('efi\boot\bootx64.efi', 'efi\microsoft\boot\bcd', 'sources\boot.wim')) {
         if (-not (Test-Path -LiteralPath "${rl}:\$f")) { Fail "${rl}:\$f 을(를) 쓰지 못했습니다." }
     }
-    Write-Unix "${rl}:\SUFUN-WININSTALL.txt" @("SUFUN restore rehearsal: Windows installer files from $(Split-Path -Leaf $winIso), $(Get-Date -Format 'yyyy-MM-dd')")
+    $note = "SUFUN restore rehearsal: Windows installer files from $(Split-Path -Leaf $winIso), $(Get-Date -Format 'yyyy-MM-dd')"
+    if ($useLight) { $note = "SUFUN LIGHT restore rehearsal: Windows Setup boot files only (no install image) from $(Split-Path -Leaf $winIso), $(Get-Date -Format 'yyyy-MM-dd')" }
+    Write-Unix "${rl}:\SUFUN-WININSTALL.txt" @($note)
     Ok '복사 완료'
 
     Step "펌웨어 부팅 항목 '$RehEntryName' 추가 (부팅 순서 맨 끝, Windows가 계속 기본)"
@@ -725,13 +796,19 @@ if ($RestoreRehearsal) {
     Cleanup
 
     Write-Host ''
-    Write-Host '=== 복원 리허설 준비 완료 ===' -ForegroundColor Green
+    if ($useLight) { Write-Host '=== 가벼운 복원 리허설 준비 완료 ===' -ForegroundColor Green }
+    else { Write-Host '=== 복원 리허설 준비 완료 ===' -ForegroundColor Green }
     Say '이제 실제로 해 보세요 (Windows는 지워지지 않습니다):'
     Say '  1) Surface를 끕니다.'
     Say '  2) 볼륨 위(+) 버튼을 누른 채 전원 버튼을 눌러 Surface UEFI를 엽니다.'
     Say '  3) Boot configuration → "Windows Setup" 을 왼쪽으로 밀기(swipe).'
     Say '  4) 보라색/파란색 "Windows 설치" 화면(언어 고르기)이 나오면 성공입니다.'
-    Say '     아무것도 설치하지 말고 창을 닫으세요 (오른쪽 위 X → "예"). Surface가 다시 시작되고 Windows가 켜집니다.'
+    if ($useLight) {
+        Say '     가벼운 리허설에는 설치 파일(install.wim)이 없습니다. "다음"을 눌러 더 가지 말고, 여기서 창을 닫으세요'
+        Say '     (오른쪽 위 X → "예"). Surface가 다시 시작되고 Windows가 켜집니다.'
+    } else {
+        Say '     아무것도 설치하지 말고 창을 닫으세요 (오른쪽 위 X → "예"). Surface가 다시 시작되고 Windows가 켜집니다.'
+    }
     Say '  5) Windows에서 이 스크립트를 -Uninstall 로 실행합니다. 리허설 결과를 물어보고, C: 를 원래대로 되돌립니다.'
     Say '"Windows Setup" 항목이 안 보이거나 설치 화면이 안 나오면: Windows를 지우지 마세요 (docs/windows-restore-ko.md).'
     Pause-End

@@ -8,7 +8,7 @@
 | 1 | Windows (Git Bash) | 서명 키 만들기, GitHub에 올리기, 공개 키 커밋 | [signing-key-ko.md](signing-key-ko.md) |
 | 2 | GitHub | 시험판 `v1.0rc1` 만들고 승인 → 키가 든 ISO 받기 | [signing-key-ko.md](signing-key-ko.md) 2번 |
 | 3 | Windows | Windows 11 ISO와 "Surface Go 3 드라이버" MSI를 미리 받아 두기 | [windows-restore-ko.md](windows-restore-ko.md) |
-| 4 | Windows + Surface UEFI | **복원 리허설**: 진짜 Windows 설치 화면이 USB 없이 뜨는지 확인 → `-Uninstall` | [windows-restore-ko.md](windows-restore-ko.md) 0단계 |
+| 4 | Windows + Surface UEFI | **복원 리허설**: 진짜 Windows 설치 화면이 USB 없이 뜨는지 확인 → `-Uninstall`. C: 를 9 GB 줄일 수 없으면 (이 Surface에서는 보통 그렇습니다) **가벼운 리허설** `-Light` | [windows-restore-ko.md](windows-restore-ko.md) 0단계 |
 | 5 | Windows | 중요한 파일을 한 번 더 백업 (OneDrive 등), BitLocker(장치 암호화) 끄기 | 아래 "설치 전 확인" |
 | 6 | Windows | 새 ISO로 microSD 카드 준비 (`sufun-sd-setup.ps1`) | [sd-boot-ko.md](sd-boot-ko.md) |
 | 7 | SUFUN 라이브 | **SUFUN 하드웨어 점검** 을 실행해 보고서 올리기 (설치 전) | 아래 "하드웨어 점검" |
@@ -30,6 +30,8 @@
 2. (ISO에 업데이트 키가 없으면 빨간 경고가 나옵니다. 그 ISO로는 설치하지 마세요.)
 3. **Windows 복원 리허설을 해 보셨나요?** → 4번에서 본 대로 고릅니다. `-Uninstall` 때 답한 결과가 미리 골라져 있습니다.
    "성공"이 아니면 위험을 설명하고, 그래도 계속할지 묻습니다 (막지는 않습니다).
+   **가벼운 리허설**(`-Light`)이 성공했어도 "성공했음"을 고릅니다: 부팅 경로가 확인된 것으로 봅니다
+   (요약 화면에는 "성공 (가벼운 리허설: 부팅 경로 확인됨)" 으로 나옵니다).
 4. **Windows 파일 가져오기**
    - Windows 사용자의 **바탕 화면, 문서, 사진, 다운로드, 동영상, 음악** 폴더 크기를 보여 줍니다.
    - "모두 가져오기" / "폴더를 골라서" / "가져오지 않음" 중에서 고릅니다.

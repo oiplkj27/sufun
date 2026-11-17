@@ -753,14 +753,21 @@ else
   # (sufun-sd-setup.ps1 -RestoreRehearsal <Windows 11 ISO>, docs/windows-restore-ko.md):
   # real Windows Setup was started once from the internal disk, without USB.
   # Its result is written next to the boot files (EFI\SUFUN\rehearsal.txt).
+  #   ok        full rehearsal worked (all install files were on the Surface)
+  #   light-ok  LIGHT rehearsal worked (-Light: boot files only, when C: could not
+  #             be shrunk enough for the whole ISO). Counts as "boot path proven":
+  #             the firmware started real Windows Setup from the internal disk.
+  #             The full set of install files is tested in CI, and the real restore
+  #             runs from SUFUN with the whole internal disk free.
+  #   failed    Windows Setup did not appear
   REHEARSAL=none
   if (( ! AUTO )); then
-    rdef=2
+    rdef=2; rmark=
     if bs=$(find_boot_stage); then
       mp=$(mktemp -d)
       if mount -o ro "$bs" "$mp" 2>/dev/null; then
         case $(sed -n 's/^Result=//p' "$mp/EFI/SUFUN/rehearsal.txt" 2>/dev/null | tr -d '\r' | head -n1) in
-          ok) rdef=1 ;; failed) rdef=3 ;;
+          ok) rdef=1; rmark=ok ;; light-ok) rdef=1; rmark=light ;; failed) rdef=3 ;;
         esac
         umount "$mp"
       fi
@@ -768,11 +775,13 @@ else
     fi
     ASKTEXT=$(T "복원 리허설 = Windows를 지우기 전에, Windows에서 'sufun-sd-setup.ps1 -RestoreRehearsal <Windows 11 ISO>' 를 실행하고 Surface UEFI의 Boot configuration에서 'Windows Setup' 을 골라 실제 Windows 설치 화면이 USB 없이 뜨는지 확인하는 것입니다 (docs/windows-restore-ko.md). 이 Surface는 USB로 부팅할 수 없어서, Windows로 돌아가는 길은 이 방법 하나뿐입니다." "Restore rehearsal = before Windows is erased, run 'sufun-sd-setup.ps1 -RestoreRehearsal <Windows 11 ISO>' on Windows and start 'Windows Setup' from Surface UEFI → Boot configuration, to see that real Windows Setup starts without USB (docs/windows-restore-ko.md). This Surface cannot boot from USB, so this is the only way back to Windows.")
     ask REHEARSAL "$(T 'Windows 복원 리허설을 해 보셨나요?' 'Did you do the Windows restore rehearsal?')" "$rdef" \
-      "1|$(T '성공했음 (Windows 설치 화면이 나왔음)' 'Yes, it worked (Windows Setup appeared)')" \
+      "1|$(T '성공했음 (Windows 설치 화면이 나왔음. 가벼운 리허설 -Light 포함)' 'Yes, it worked (Windows Setup appeared; the light rehearsal counts too)')" \
       "2|$(T '아직 안 했음' 'Not done yet')" \
       "3|$(T '해 봤지만 실패했음' 'Tried, but it failed')"
     case $ANS_REHEARSAL in 1) REHEARSAL=ok ;; 3) REHEARSAL=failed ;; *) REHEARSAL=none ;; esac
-    if [[ $REHEARSAL != ok ]]; then
+    # "light" = boot path proven by the light rehearsal: treated like "ok" below
+    if [[ $REHEARSAL == ok && $rmark == light ]]; then REHEARSAL=light; fi
+    if [[ $REHEARSAL != ok && $REHEARSAL != light ]]; then
       warn "$(T '⚠️  복원 리허설이 성공하지 않았습니다. 지금 Windows를 지우면 Windows로 돌아가지 못할 수도 있습니다.' '⚠️  The restore rehearsal has not succeeded. If Windows is erased now, there may be no way back to it.')"
       ASKTEXT=$(T "권장: 설치를 멈추고 Windows에서 복원 리허설을 먼저 하세요 (10-30분, docs/windows-restore-ko.md). 리허설이 성공해야 나중에 'Windows 복원'이 이 Surface에서 정말 된다는 것을 알 수 있습니다. 리허설 없이 계속하면, 복원이 안 될 때 이 Surface에는 SUFUN만 남습니다 (수리점이나 다른 Surface Dock 없이는 Windows를 다시 설치할 수 없음)." "Recommended: stop here and do the restore rehearsal on Windows first (10-30 minutes, docs/windows-restore-ko.md). Only a successful rehearsal shows that 'Windows restore' really works on this Surface. If you continue without it and the restore later fails, this Surface can only run SUFUN.")
       yesno "$(T '위험을 이해했고, 복원 리허설 없이 Windows를 지우겠습니까?' 'I understand the risk: erase Windows without a successful rehearsal?')" n || cancelled
@@ -782,7 +791,7 @@ else
   # Restore dry-run (a second, smaller test from this live system): a "Windows
   # Setup" firmware entry made from Linux shows up in this Surface's boot menu
   # and starts. Offered when the rehearsal was not done.
-  if (( ! AUTO )) && [[ $REHEARSAL != ok ]] && command -v sufun-windows-restore >/dev/null; then
+  if (( ! AUTO )) && [[ $REHEARSAL != ok && $REHEARSAL != light ]] && command -v sufun-windows-restore >/dev/null; then
     if sufun-windows-restore --boot-test-status >/dev/null 2>&1; then
       r=n
       if yesno "$(T "지난번 복원 테스트에서 부팅 메뉴에 'Windows Setup' 이 보였고, 고르면 Windows가 시작됐나요?" "In the last restore test, did 'Windows Setup' appear in the boot menu, and did Windows start from it?")" n; then r=y; fi
@@ -887,6 +896,7 @@ if [[ $MODE == emmc ]]; then
   bold "마지막 확인: $DISK 의 모든 데이터가 지워집니다 (Windows 포함)."
   case $REHEARSAL in
     ok)     R_TXT=$(T '성공' 'worked') ;;
+    light)  R_TXT=$(T '성공 (가벼운 리허설: 부팅 경로 확인됨)' 'worked (light rehearsal: boot path proven)') ;;
     failed) R_TXT=$(T '실패 (Windows로 돌아가지 못할 수 있음)' 'FAILED (there may be no way back to Windows)') ;;
     *)      R_TXT=$(T '안 함 (Windows로 돌아가지 못할 수 있음)' 'NOT DONE (there may be no way back to Windows)') ;;
   esac

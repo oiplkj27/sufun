@@ -109,7 +109,7 @@ SUFUN(pacman)은 버전을 이렇게 비교합니다: `1.0dev < 1.0rc1 < 1.0rc2 
 3. GitHub → **Actions** → "Release" 실행이 시작됩니다 (빌드 + 모든 테스트, 약 2시간).
 4. 테스트가 통과하면 **승인 대기** 상태가 됩니다: 실행 화면의 **Review deployments** → `release` 체크 → **Approve and deploy**.
 5. 서명이 끝나면 GitHub → **Releases** 에 "SUFUN 1.0rc1 (시험판 / pre-release)" 이 생깁니다:
-   - `sufun-1.0rc1-x86_64.iso` (2 GiB보다 크면 `.part00`, `.part01` 로 나뉨. `ISO-합치는-방법.txt` 참고)
+   - `sufun-1.0rc1-x86_64.iso` (2 GiB보다 크면 `.part00`, `.part01` 로 나뉨. `HOW-TO-JOIN-ISO.txt` 참고)
    - `sufun-update-1.0rc1.sufun` (업데이트 파일)
    - `SHA256SUMS`, `SHA256SUMS.asc` (서명된 체크섬)
 

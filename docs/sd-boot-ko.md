@@ -30,7 +30,7 @@
 GitHub의 **Releases → SUFUN x.y** 에서 받습니다.
 
 - ISO가 한 파일이면 `sufun-x.y-x86_64.iso` 만 받으면 됩니다.
-- 조각(`.part00`, `.part01`, ...)으로 나뉘어 있으면 모두 받은 뒤 `ISO-합치는-방법.txt` 대로 합칩니다.
+- 조각(`.part00`, `.part01`, ...)으로 나뉘어 있으면 모두 받은 뒤 `HOW-TO-JOIN-ISO.txt` 대로 합칩니다.
 - 같은 곳에서 **`sufun-sd-setup.ps1`** 도 받으세요 (이 준비 스크립트).
 
 **C: 공간이 부족하면:** 카드를 먼저 넣고, ISO(또는 조각)를 **카드에 바로** 저장하세요.
@@ -77,6 +77,9 @@ microSD 카드를 Surface 뒷면 받침대(킥스탠드) 아래 슬롯에 끝까
 내부 저장장치에는 이것만 바뀝니다:
 - EFI 시스템 파티션에 `\EFI\SUFUN\` 폴더와 `\loader\` 폴더 (SUFUN 표시 파일 포함),
 - **EFI 파티션이 작으면** 대신: C:를 1 GB 줄이고 FAT32 파티션 **SUFUNBOOT** 를 만듭니다
+  (참고: 이 Surface에서 C: 는 빈 공간이 많아도 몇 GB밖에 줄일 수 없습니다. NTFS 변경 저널 `$UsnJrnl` 이
+  C: 의 뒤쪽에 있어서인데, 지워도 다시 생기므로 쫓아다니지 마세요. 1 GB는 문제없이 줄일 수 있습니다.
+  [windows-restore-ko.md](windows-restore-ko.md) "가벼운 리허설")
   (탐색기에는 드라이브 문자 없이 숨겨집니다),
 - 펌웨어 부팅 항목 **"SUFUN (SD)"** 를 부팅 순서 **맨 끝**에 추가 (Windows Boot Manager가 계속 첫 번째).
 

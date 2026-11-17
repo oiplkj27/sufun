@@ -182,7 +182,7 @@ jobs:
           $b = [IO.File]::ReadAllBytes((Resolve-Path 'scripts\windows\sufun-sd-setup.ps1'))
           if ($b[0] -ne 0xEF -or $b[1] -ne 0xBB -or $b[2] -ne 0xBF) { Write-Host 'sufun-sd-setup.ps1 has no UTF-8 BOM'; exit 1 }
 
-      - name: Setup test (case a + case b, ESP and SUFUNBOOT partition, uninstall, restore rehearsal)
+      - name: Setup test (case a + case b, ESP and SUFUNBOOT partition, uninstall, restore rehearsal full + light)
         shell: powershell
         run: |
           $iso = (Get-ChildItem iso\*.iso | Select-Object -First 1).FullName
@@ -199,13 +199,16 @@ jobs:
             ${{ runner.temp }}/sdtest/card.vhdx
             ${{ runner.temp }}/sdtest/rehearsal.vhdx
             ${{ runner.temp }}/sdtest/rehearsal-entry.hex
+            ${{ runner.temp }}/sdtest/light.vhdx
+            ${{ runner.temp }}/sdtest/light-entry.hex
           compression-level: 1
           retention-days: 3
 
-      - name: Uninstall test (case a, and the restore rehearsal)
+      - name: Uninstall test (case a, and the restore rehearsals; the light one twice)
         shell: powershell
         run: |
-          & .\scripts\ci\windows-sd-setup-test.ps1 -Phase uninstall -Work "$env:RUNNER_TEMP\sdtest"
+          $win = (Get-ChildItem winiso\*.iso | Select-Object -First 1).FullName
+          & .\scripts\ci\windows-sd-setup-test.ps1 -Phase uninstall -Work "$env:RUNNER_TEMP\sdtest" -WinIso $win
           exit $LASTEXITCODE
 
   # microSD live boot, "SD카드에 설치" and the installed system on the card,
@@ -252,7 +255,7 @@ jobs:
           name: sufun-iso
           path: iso
 
-      - name: microSD boot, install and restore rehearsal test
+      - name: microSD boot, install and restore rehearsal tests (full + light)
         run: bash scripts/ci/qemu-sd-test.sh sd-disks "$(bash scripts/version.sh)" test-results-sd iso/*.iso
 
       - name: Upload screenshots and serial logs

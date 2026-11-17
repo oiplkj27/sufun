@@ -20,6 +20,10 @@
 #           that Windows made, and the firmware entry bytes the Windows script made
 #           are exactly the bytes Linux's efibootmgr makes for that partition (the
 #           later restore uses efibootmgr). Needs the SUFUN ISO (4th argument).
+#   Test 10: the same for the LIGHT rehearsal disk (light.vhdx, made by the script's
+#           light mode on a "Windows" partition too full for the whole ISO): the
+#           small WININSTALL partition has no install image, and the firmware
+#           starts \efi\boot\bootx64.efi from it.
 #
 # Not testable here: the firmware entry "SUFUN (SD)" (bcdedit, Windows' NVRAM) and the
 # Surface UEFI itself. The firmware entry is emulated by copying the boot menu to the
@@ -109,29 +113,41 @@ if (( ! fail )); then
   echo "== boot stage after install:"; mdir -/ -i "$M" ::/EFI/SUFUN ::/loader 2>&1 | grep -vE '^$|Volume|Directory for' | head -30
 fi
 
-# --- test 9: the restore rehearsal disk made on Windows ---
-if [[ -n $ISO && -f $VHD/rehearsal.vhdx ]]; then
-  qemu-img convert -O raw "$VHD/rehearsal.vhdx" rehearsal.img || die "rehearsal.vhdx"
-  echo "== rehearsal disk made by sufun-sd-setup.ps1 -RestoreRehearsal:"; sfdisk -l rehearsal.img
-  SAVED_VARS=$VARS; VARS="$OUT/reh-vars.fd"; cp "$VARS_SRC" "$VARS"
+# --- tests 9 and 10: the restore rehearsal disks made on Windows (full and light) ---
+rehearsal_boot() {  # rehearsal_boot <test name> <disk name without .vhdx> <light|full>
+  local name=$1 base=$2 kind=$3 win lin files rc=0
+  qemu-img convert -O raw "$VHD/$base.vhdx" "$base.img" || die "$base.vhdx"
+  echo "== $kind rehearsal disk made by sufun-sd-setup.ps1 -RestoreRehearsal:"; sfdisk -l "$base.img"
+  local saved_vars=$VARS; VARS="$OUT/$base-vars.fd"; cp "$VARS_SRC" "$VARS"
   # bootindex: the firmware tries this disk first; the SUFUN ISO is only there as
   # the root file system of the test kernel that stands in for Windows Setup
-  run_vm 9-rehearsal 900 'SUFUN-TEST: WINSETUP-BOOT-OK' 'SUFUN-TEST: BOOTED' \
-    -drive file=rehearsal.img,if=none,id=rdisk,format=raw -device virtio-blk-pci,drive=rdisk,bootindex=1 \
-    -cdrom "$ISO" || fail=1
-  VARS=$SAVED_VARS
-  win=$(tr -d '[:space:]' < "$VHD/rehearsal-entry.hex" 2>/dev/null | tr 'A-F' 'a-f')
-  lin=$(grep -ao 'efibootmgr-entry-hex [0-9a-f]*' 9-rehearsal-serial.log | head -n1 | awk '{print $2}')
+  run_vm "$name" 900 'SUFUN-TEST: WINSETUP-BOOT-OK' 'SUFUN-TEST: BOOTED' \
+    -drive "file=$base.img,if=none,id=rdisk,format=raw" -device virtio-blk-pci,drive=rdisk,bootindex=1 \
+    -cdrom "$ISO" || rc=1
+  VARS=$saved_vars
+  win=$(tr -d '[:space:]' < "$VHD/$base-entry.hex" 2>/dev/null | tr 'A-F' 'a-f')
+  lin=$(grep -ao 'efibootmgr-entry-hex [0-9a-f]*' "$name-serial.log" | head -n1 | awk '{print $2}')
   echo "entry made by the Windows script: $win"
   echo "entry made by efibootmgr:         $lin"
   if [[ -n $win && $win == "$lin" ]]; then
-    echo "OK: the rehearsal's firmware entry is byte-for-byte the entry efibootmgr makes"
+    echo "OK: the $kind rehearsal's firmware entry is byte-for-byte the entry efibootmgr makes"
   else
-    echo "the rehearsal's firmware entry differs from efibootmgr's"; fail=1
+    echo "the $kind rehearsal's firmware entry differs from efibootmgr's"; rc=1
   fi
-  rm -f rehearsal.img
+  # what is in the partition's \sources folder (printed by the test kernel)
+  files=$(grep -a 'INFO rehearsal partition' "$name-serial.log" | head -n1 | sed 's/.*files: //')
+  echo "files in WININSTALL\\sources: $files"
+  if [[ $files != *boot.wim* ]]; then echo "no boot.wim on the $kind rehearsal partition"; rc=1; fi
+  if [[ $kind == light && $files == *install* ]]; then echo "the light rehearsal partition has an install image"; rc=1; fi
+  if [[ $kind == full && $files != *install*.swm* ]]; then echo "the full rehearsal partition has no install.swm"; rc=1; fi
+  rm -f "$base.img"
+  return $rc
+}
+if [[ -n $ISO && -f $VHD/rehearsal.vhdx && -f $VHD/light.vhdx ]]; then
+  rehearsal_boot 9-rehearsal rehearsal full || fail=1
+  rehearsal_boot 10-rehearsal-light light light || fail=1
 elif [[ ${GITHUB_ACTIONS:-} == true ]]; then
-  echo "restore rehearsal disk or SUFUN ISO missing"; fail=1
+  echo "restore rehearsal disks (rehearsal.vhdx, light.vhdx) or SUFUN ISO missing"; fail=1
 fi
 
 rm -f internal.img card.img bootx64.efi e.conf ./*.sock
